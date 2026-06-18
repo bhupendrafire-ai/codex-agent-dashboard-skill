@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Dashboard"
+  short_description: "Open a local dashboard for Codex sub-agent status."
+  default_prompt: "Open or update the local agent dashboard for active Codex sub-agents."
