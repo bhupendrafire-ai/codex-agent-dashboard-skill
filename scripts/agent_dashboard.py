@@ -23,6 +23,9 @@ DEFAULT_STATUS = DEFAULT_DIR / "agent-status.json"
 DEFAULT_HTML = DEFAULT_DIR / "agent-dashboard.html"
 DEFAULT_OPEN_STATE = DEFAULT_DIR / "open-state.json"
 DEFAULT_CONCURRENCY_LIMIT = 6
+DEFAULT_MANUAL_MINUTES_PER_AGENT = 45
+DEFAULT_COORDINATION_MINUTES_PER_AGENT = 8
+DEFAULT_FOCUS_BLOCK_MINUTES = 25
 DEFAULT_STALE_MINUTES = {
     "planned": 120,
     "queued": 120,
@@ -95,6 +98,18 @@ ACTIVE_STATES = {"running"}
 QUEUE_STATES = {"planned", "queued", "needs-review"}
 DONE_STATES = {"reviewed", "merged", "closed"}
 BLOCKED_STATES = {"blocked", "failed"}
+IMPACT_PROGRESS_WEIGHTS = {
+    "planned": 0.15,
+    "queued": 0.20,
+    "running": 0.50,
+    "completed": 0.85,
+    "needs-review": 0.90,
+    "reviewed": 1.00,
+    "merged": 1.00,
+    "closed": 1.00,
+    "blocked": 0.35,
+    "failed": 0.25,
+}
 RECIPES = {
     "explorer-swarm": {
         "title": "Explorer Swarm",
@@ -335,6 +350,14 @@ def list_from_value(value: object) -> list[str]:
     return split_list(text) if text else []
 
 
+def positive_int(value: object, default: int = 0) -> int:
+    try:
+        parsed = int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
+
+
 def first_value(data: dict, keys: list[str], default: object = "") -> object:
     for key in keys:
         if key in data and data.get(key) is not None:
@@ -413,6 +436,12 @@ def parse_agent_json(data: dict) -> dict:
     agent["tests"] = text_from_value(first_value(data, ["tests", "testsRun", "verification", "checks"], agent.get("tests", "")))
     agent["blockers"] = text_from_value(first_value(data, ["blockers", "blocker", "blockerStatus", "risks"], agent.get("blockers", "")))
     agent["handoff"] = text_from_value(first_value(data, ["handoff", "nextHandoff", "next_owner", "nextOwner"], agent.get("handoff", "")))
+    manual_minutes = positive_int(first_value(data, ["manualMinutes", "manual_minutes", "estimatedManualMinutes", "estimated_manual_minutes"], agent.get("manualMinutes", 0)))
+    coordination_minutes = positive_int(first_value(data, ["coordinationMinutes", "coordination_minutes", "agentMinutes", "agent_minutes"], agent.get("coordinationMinutes", 0)))
+    if manual_minutes:
+        agent["manualMinutes"] = manual_minutes
+    if coordination_minutes:
+        agent["coordinationMinutes"] = coordination_minutes
     agent["updatedAt"] = text_from_value(first_value(data, ["updatedAt", "timestamp", "reportedAt"], agent.get("updatedAt", ""))) or utc_now()
     if data.get("noBlockers") is True and not agent.get("blockers"):
         agent["blockers"] = "None reported"
@@ -602,6 +631,10 @@ def normalize_agent(agent: dict) -> dict:
     agent.setdefault("review", {"state": review_state_for(status), "notes": "", "reviewedAt": ""})
     agent.setdefault("worktree", {})
     agent.setdefault("commands", [])
+    if agent.get("manualMinutes"):
+        agent["manualMinutes"] = positive_int(agent.get("manualMinutes"), 0)
+    if agent.get("coordinationMinutes"):
+        agent["coordinationMinutes"] = positive_int(agent.get("coordinationMinutes"), 0)
     return agent
 
 
@@ -628,7 +661,14 @@ def ensure_control_plane(payload: dict) -> dict:
     payload.setdefault("commands", [])
     payload.setdefault("memoryExports", [])
     payload.setdefault("recipes", RECIPES)
+    payload.setdefault("impact", {})
     payload.setdefault("workflow", {})
+    impact = payload["impact"] if isinstance(payload.get("impact"), dict) else {}
+    impact.setdefault("manualMinutesPerAgent", DEFAULT_MANUAL_MINUTES_PER_AGENT)
+    impact.setdefault("coordinationMinutesPerAgent", DEFAULT_COORDINATION_MINUTES_PER_AGENT)
+    impact.setdefault("focusBlockMinutes", DEFAULT_FOCUS_BLOCK_MINUTES)
+    impact.setdefault("note", "Estimated from agent work slices, progress state, and orchestration overhead.")
+    payload["impact"] = impact
     workflow = payload["workflow"] if isinstance(payload.get("workflow"), dict) else {}
     workflow.setdefault("objective", "")
     workflow.setdefault("status", "active")
@@ -1188,12 +1228,15 @@ def render_protocol_summary(agent: dict) -> str:
 
 def render_memory_summary(payload: dict) -> str:
     agents = payload.get("agents", [])
+    impact = compute_impact(payload, agents, count_agents(agents))
     lines = [
         "## Codex agent control-plane run",
         f"- Exported: {compact_time(utc_now())}",
         f"- Dashboard: http://127.0.0.1:8765/agent-dashboard.html",
         f"- Objective: {payload.get('workflow', {}).get('objective') or 'Not recorded'}",
         f"- Agents launched: {len(agents)}",
+        f"- Estimated time saved: {format_minutes(int(impact.get('savedMinutes', 0)))}",
+        f"- Impact rank: {impact.get('rank')}",
         "",
         "### Agent states",
     ]
@@ -1537,7 +1580,106 @@ def render_view_tabs(current: str) -> str:
     ) + "</nav>"
 
 
-def render_stats(counts: dict[str, int]) -> str:
+def impact_config(payload: dict) -> dict:
+    config = payload.get("impact") if isinstance(payload.get("impact"), dict) else {}
+    return {
+        "manualMinutesPerAgent": max(1, positive_int(config.get("manualMinutesPerAgent"), DEFAULT_MANUAL_MINUTES_PER_AGENT)),
+        "coordinationMinutesPerAgent": positive_int(config.get("coordinationMinutesPerAgent"), DEFAULT_COORDINATION_MINUTES_PER_AGENT),
+        "focusBlockMinutes": max(1, positive_int(config.get("focusBlockMinutes"), DEFAULT_FOCUS_BLOCK_MINUTES)),
+        "note": text_from_value(config.get("note")) or "Estimated from agent work slices, progress state, and orchestration overhead.",
+    }
+
+
+def impact_rank(saved_minutes: int) -> str:
+    if saved_minutes >= 600:
+        return "Mission Director"
+    if saved_minutes >= 300:
+        return "Flow Captain"
+    if saved_minutes >= 120:
+        return "Scale Builder"
+    if saved_minutes >= 30:
+        return "Momentum Maker"
+    return "Warming Up"
+
+
+def format_minutes(minutes: int) -> str:
+    minutes = max(0, int(minutes))
+    hours = minutes // 60
+    remainder = minutes % 60
+    if hours and remainder:
+        return f"{hours}h {remainder}m"
+    if hours:
+        return f"{hours}h"
+    return f"{remainder}m"
+
+
+def compute_impact(payload: dict, agents: list[dict], counts: dict[str, int]) -> dict:
+    config = impact_config(payload)
+    manual_total = 0.0
+    coordination_total = 0.0
+    effective_slices = 0.0
+    explicit_estimates = 0
+
+    for agent in agents:
+        status = agent_status(agent)
+        progress = IMPACT_PROGRESS_WEIGHTS.get(status, 0.5)
+        manual_minutes = positive_int(agent.get("manualMinutes"), config["manualMinutesPerAgent"])
+        coordination_minutes = positive_int(agent.get("coordinationMinutes"), config["coordinationMinutesPerAgent"])
+        if agent.get("manualMinutes") or agent.get("coordinationMinutes"):
+            explicit_estimates += 1
+        manual_total += manual_minutes * progress
+        coordination_total += coordination_minutes * progress
+        effective_slices += progress
+
+    manual_minutes_total = int(round(manual_total))
+    coordination_minutes_total = int(round(coordination_total))
+    saved_minutes = max(0, manual_minutes_total - coordination_minutes_total)
+    focus_blocks = saved_minutes // config["focusBlockMinutes"]
+    done_count = counts.get("reviewed", 0) + counts.get("merged", 0) + counts.get("closed", 0)
+    review_ready = counts.get("completed", 0) + counts.get("needs-review", 0)
+    running = counts.get("running", 0)
+    clean_review_ready = len([
+        agent for agent in agents
+        if agent_status(agent) in {"completed", "needs-review", "reviewed", "merged", "closed"}
+        and not review_gate_issues(agent)
+    ])
+    warnings = dashboard_warnings(payload, agents)
+
+    badges: list[dict[str, str]] = []
+    if agents:
+        badges.append({"title": "Impact Started", "detail": f"{len(agents)} slices tracked"})
+    if running >= 2:
+        badges.append({"title": "Parallel Lift", "detail": f"{running} agents in motion"})
+    if clean_review_ready:
+        badges.append({"title": "Evidence Streak", "detail": f"{clean_review_ready} clean handoffs"})
+    if done_count:
+        badges.append({"title": "Review Closer", "detail": f"{done_count} slices done"})
+    if agents and not warnings:
+        badges.append({"title": "Low Drift", "detail": "No active dashboard warnings"})
+    if saved_minutes >= 120:
+        badges.append({"title": "Deep Work Banked", "detail": f"{focus_blocks} focus blocks recovered"})
+
+    return {
+        "manualMinutes": manual_minutes_total,
+        "coordinationMinutes": coordination_minutes_total,
+        "savedMinutes": saved_minutes,
+        "focusBlocks": focus_blocks,
+        "focusBlockMinutes": config["focusBlockMinutes"],
+        "effectiveSlices": round(effective_slices, 1),
+        "rank": impact_rank(saved_minutes),
+        "badges": badges[:6],
+        "assumption": (
+            f"{config['manualMinutesPerAgent']}m manual baseline minus "
+            f"{config['coordinationMinutesPerAgent']}m coordination per full agent slice"
+        ),
+        "note": config["note"],
+        "explicitEstimates": explicit_estimates,
+        "reviewReady": review_ready,
+    }
+
+
+def render_stats(counts: dict[str, int], impact: dict | None = None) -> str:
+    saved = format_minutes(int((impact or {}).get("savedMinutes", 0)))
     return f"""
       <section class="stats">
         <div class="stat"><span>Planned</span><strong>{counts.get("planned", 0)}</strong></div>
@@ -1545,6 +1687,7 @@ def render_stats(counts: dict[str, int]) -> str:
         <div class="stat warn"><span>Review</span><strong>{counts.get("needs-review", 0) + counts.get("completed", 0)}</strong></div>
         <div class="stat bad"><span>Blocked</span><strong>{counts["blocked"]}</strong></div>
         <div class="stat ok"><span>Done</span><strong>{counts.get("reviewed", 0) + counts.get("merged", 0) + counts.get("closed", 0)}</strong></div>
+        <div class="stat impact"><span>Saved</span><strong>{esc(saved)}</strong></div>
       </section>
     """
 
@@ -1556,6 +1699,47 @@ def render_panel(title: str, detail: str, body: str) -> str:
         <div class="panel-body">{body}</div>
       </section>
     """
+
+
+def render_impact_panel(impact: dict) -> str:
+    badges = impact.get("badges") if isinstance(impact.get("badges"), list) else []
+    badge_markup = "".join(
+        f"""
+        <div class="impact-badge">
+          <strong>{esc(badge.get("title"))}</strong>
+          <span>{esc(badge.get("detail"))}</span>
+        </div>
+        """
+        for badge in badges if isinstance(badge, dict)
+    ) or '<span class="muted">Start tracking agents to unlock impact badges.</span>'
+    body = f"""
+      <div class="impact-grid">
+        <section class="impact-hero">
+          <label>Estimated time saved</label>
+          <strong>{esc(format_minutes(int(impact.get("savedMinutes", 0))))}</strong>
+          <p>{esc(impact.get("rank"))} - {esc(impact.get("assumption"))}</p>
+        </section>
+        <section>
+          <label>Manual effort avoided</label>
+          <p>{esc(format_minutes(int(impact.get("manualMinutes", 0))))}</p>
+        </section>
+        <section>
+          <label>Coordination cost</label>
+          <p>{esc(format_minutes(int(impact.get("coordinationMinutes", 0))))}</p>
+        </section>
+        <section>
+          <label>Focus blocks recovered</label>
+          <p>{esc(impact.get("focusBlocks", 0))} x {esc(impact.get("focusBlockMinutes", DEFAULT_FOCUS_BLOCK_MINUTES))}m</p>
+        </section>
+        <section>
+          <label>Effective work slices</label>
+          <p>{esc(impact.get("effectiveSlices", 0))}</p>
+        </section>
+      </div>
+      <div class="impact-badges">{badge_markup}</div>
+      <p class="impact-note">{esc(impact.get("note"))}</p>
+    """
+    return render_panel("Impact Scoreboard", "estimated by dashboard", body)
 
 
 def filter_agents(agents: list[dict], statuses: set[str]) -> list[dict]:
@@ -1616,8 +1800,10 @@ def render_overview(payload: dict, agents: list[dict], counts: dict[str, int]) -
     blocked_agents = filter_agents(agents, {"blocked", "failed"})
     recent = render_events(payload, agents)
     warnings = dashboard_warnings(payload, agents)
+    impact = compute_impact(payload, agents, counts)
     return (
-        render_stats(counts)
+        render_stats(counts, impact)
+        + render_impact_panel(impact)
         + (render_panel("Stale / Drift Warnings", f"{len(warnings)} warnings", render_warning_list(warnings)) if warnings else "")
         + render_panel("Active Agents", f"{len(active_agents)} in motion", render_agent_table(active_agents))
         + (render_panel("Blocked", f"{len(blocked_agents)} need attention", render_agent_table(blocked_agents)) if blocked_agents else "")
@@ -1691,6 +1877,7 @@ def render_workflow_view(payload: dict, agents: list[dict], counts: dict[str, in
     running = len(filter_agents(agents, {"running"}))
     capacity = max(0, int(limit) - running)
     warnings = dashboard_warnings(payload, agents)
+    impact = compute_impact(payload, agents, counts)
     body = f"""
       <div class="workflow-grid">
         <section>
@@ -1716,7 +1903,8 @@ def render_workflow_view(payload: dict, agents: list[dict], counts: dict[str, in
       </div>
     """
     return (
-        render_stats(counts)
+        render_stats(counts, impact)
+        + render_impact_panel(impact)
         + (render_panel("Stale / Drift Warnings", f"{len(warnings)} warnings", render_warning_list(warnings)) if warnings else "")
         + render_panel("Workflow Runner", "wave scheduler and orchestration state", body)
         + render_panel("Pending Commands", "copy into Codex tool actions", render_pending_commands(payload))
@@ -2153,7 +2341,7 @@ def render_html(payload: dict, view: str = "overview", agent_ref: str = "") -> s
     }}
     .stats {{
       display: grid;
-      grid-template-columns: repeat(5, minmax(66px, 1fr));
+      grid-template-columns: repeat(6, minmax(66px, 1fr));
       gap: 8px;
       margin: 12px 0;
     }}
@@ -2178,6 +2366,72 @@ def render_html(payload: dict, view: str = "overview", agent_ref: str = "") -> s
     .stat.warn strong {{ color: var(--yellow); }}
     .stat.ok strong {{ color: var(--green); }}
     .stat.bad strong {{ color: var(--red); }}
+    .stat.impact strong {{ color: #b8f1ca; }}
+    .impact-grid {{
+      display: grid;
+      grid-template-columns: 1.35fr repeat(4, minmax(110px, 1fr));
+      gap: 10px;
+      padding: 12px;
+    }}
+    .impact-grid section {{
+      border: 1px solid var(--line-soft);
+      background: #101116;
+      border-radius: 8px;
+      padding: 10px;
+      min-width: 0;
+    }}
+    .impact-hero {{
+      background: linear-gradient(135deg, rgba(87,214,129,.12), rgba(121,174,252,.1)) !important;
+      border-color: rgba(87,214,129,.35) !important;
+    }}
+    .impact-hero strong {{
+      display: block;
+      margin: 2px 0 4px;
+      color: #b8f1ca;
+      font-size: 28px;
+      line-height: 1.05;
+    }}
+    .impact-grid section p {{
+      color: var(--text-soft);
+      font-size: 16px;
+      font-weight: 620;
+    }}
+    .impact-hero p {{
+      color: var(--muted) !important;
+      font-size: 12px !important;
+      font-weight: 400 !important;
+      line-height: 1.35;
+    }}
+    .impact-badges {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      padding: 0 12px 12px;
+    }}
+    .impact-badge {{
+      border: 1px solid rgba(121,174,252,.32);
+      background: rgba(121,174,252,.08);
+      border-radius: 8px;
+      padding: 7px 9px;
+      min-width: 128px;
+    }}
+    .impact-badge strong {{
+      display: block;
+      color: var(--text-soft);
+      font-size: 12px;
+    }}
+    .impact-badge span {{
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      margin-top: 2px;
+    }}
+    .impact-note {{
+      margin: -2px 12px 12px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }}
     .panel {{
       border: 1px solid var(--line);
       background: var(--surface);
@@ -2559,7 +2813,7 @@ def render_html(payload: dict, view: str = "overview", agent_ref: str = "") -> s
       .shell {{ grid-template-columns: 1fr; }}
       aside {{ position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }}
       .side-head {{ border-bottom: 0; }}
-      .stats, .detail-grid, .queue-grid, .workflow-grid, .diff-row, .command-row, .review-row, .recipe-row {{ grid-template-columns: 1fr; }}
+      .stats, .detail-grid, .queue-grid, .workflow-grid, .impact-grid, .diff-row, .command-row, .review-row, .recipe-row {{ grid-template-columns: 1fr; }}
       .row-actions {{ justify-content: flex-start; }}
     }}
     @media (min-width: 560px) and (max-width: 760px) {{
@@ -2721,6 +2975,10 @@ def main() -> int:
     parser.add_argument("--final-report-json-file", action="append", default=[], help="Path to final report JSON object/array.")
     parser.add_argument("--workflow-objective", default="", help="Set the run objective.")
     parser.add_argument("--concurrency-limit", type=int, default=0, help="Set the active sub-agent concurrency limit.")
+    parser.add_argument("--manual-minutes-per-agent", type=int, default=0, help="Manual-work baseline for the impact/time-saved estimate.")
+    parser.add_argument("--coordination-minutes-per-agent", type=int, default=-1, help="Agent orchestration overhead for the impact/time-saved estimate.")
+    parser.add_argument("--focus-block-minutes", type=int, default=0, help="Focus-block length used by the impact scoreboard.")
+    parser.add_argument("--impact-note", default="", help="Explain the assumptions behind the impact/time-saved estimate.")
     parser.add_argument("--scan-worktree", default="", help="Scan a git worktree for diff/worktree intelligence.")
     parser.add_argument("--scan-ignore", action="append", default=[], help="Additional git status path/glob pattern to ignore during --scan-worktree.")
     parser.add_argument("--export-second-brain", action="store_true", help="Append a run summary to the second-brain daily note.")
@@ -2780,6 +3038,14 @@ def main() -> int:
             payload.setdefault("workflow", {})["objective"] = args.workflow_objective
         if args.concurrency_limit:
             payload.setdefault("workflow", {})["concurrencyLimit"] = max(1, args.concurrency_limit)
+        if args.manual_minutes_per_agent:
+            payload.setdefault("impact", {})["manualMinutesPerAgent"] = max(1, args.manual_minutes_per_agent)
+        if args.coordination_minutes_per_agent >= 0:
+            payload.setdefault("impact", {})["coordinationMinutesPerAgent"] = max(0, args.coordination_minutes_per_agent)
+        if args.focus_block_minutes:
+            payload.setdefault("impact", {})["focusBlockMinutes"] = max(1, args.focus_block_minutes)
+        if args.impact_note:
+            payload.setdefault("impact", {})["note"] = args.impact_note
         for raw in args.reconcile_agent_id:
             fields = [field.strip() for field in raw.split("|")]
             fields += [""] * (3 - len(fields))

@@ -45,22 +45,25 @@
   <rect x="1062" y="102" width="86" height="32" rx="16" fill="#15251b" stroke="#2d8e52"/>
   <circle cx="1082" cy="118" r="5" fill="#57d681"/>
   <text x="1096" y="123" fill="#b8f1ca" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="650">Live</text>
-  <rect x="342" y="174" width="152" height="86" rx="12" fill="#141519" stroke="#2a2d35"/>
-  <rect x="512" y="174" width="152" height="86" rx="12" fill="#141519" stroke="#2a2d35"/>
-  <rect x="682" y="174" width="152" height="86" rx="12" fill="#141519" stroke="#2a2d35"/>
-  <rect x="852" y="174" width="152" height="86" rx="12" fill="#141519" stroke="#2a2d35"/>
-  <rect x="1022" y="174" width="126" height="86" rx="12" fill="#141519" stroke="#2a2d35"/>
+  <rect x="342" y="174" width="121" height="86" rx="12" fill="#141519" stroke="#2a2d35"/>
+  <rect x="477" y="174" width="121" height="86" rx="12" fill="#141519" stroke="#2a2d35"/>
+  <rect x="612" y="174" width="121" height="86" rx="12" fill="#141519" stroke="#2a2d35"/>
+  <rect x="747" y="174" width="121" height="86" rx="12" fill="#141519" stroke="#2a2d35"/>
+  <rect x="882" y="174" width="121" height="86" rx="12" fill="#141519" stroke="#2a2d35"/>
+  <rect x="1017" y="174" width="131" height="86" rx="12" fill="#141519" stroke="#2a2d35"/>
   <g font-family="Inter, Segoe UI, Arial, sans-serif">
     <text x="362" y="202" fill="#9298a3" font-size="13">Running</text>
     <text x="362" y="236" fill="#79aefc" font-size="34" font-weight="750">3</text>
-    <text x="532" y="202" fill="#9298a3" font-size="13">Queued</text>
-    <text x="532" y="236" fill="#e9b85d" font-size="34" font-weight="750">5</text>
-    <text x="702" y="202" fill="#9298a3" font-size="13">Review</text>
-    <text x="702" y="236" fill="#e9b85d" font-size="34" font-weight="750">2</text>
-    <text x="872" y="202" fill="#9298a3" font-size="13">Done</text>
-    <text x="872" y="236" fill="#57d681" font-size="34" font-weight="750">9</text>
-    <text x="1042" y="202" fill="#9298a3" font-size="13">Blocked</text>
-    <text x="1042" y="236" fill="#ff7373" font-size="34" font-weight="750">1</text>
+    <text x="497" y="202" fill="#9298a3" font-size="13">Queued</text>
+    <text x="497" y="236" fill="#e9b85d" font-size="34" font-weight="750">5</text>
+    <text x="632" y="202" fill="#9298a3" font-size="13">Review</text>
+    <text x="632" y="236" fill="#e9b85d" font-size="34" font-weight="750">2</text>
+    <text x="767" y="202" fill="#9298a3" font-size="13">Blocked</text>
+    <text x="767" y="236" fill="#ff7373" font-size="34" font-weight="750">1</text>
+    <text x="902" y="202" fill="#9298a3" font-size="13">Done</text>
+    <text x="902" y="236" fill="#57d681" font-size="34" font-weight="750">9</text>
+    <text x="1037" y="202" fill="#9298a3" font-size="13">Saved</text>
+    <text x="1037" y="236" fill="#b8f1ca" font-size="34" font-weight="750">4h</text>
   </g>
   <rect x="342" y="290" width="500" height="220" rx="14" fill="#141519" stroke="#2a2d35"/>
   <rect x="866" y="290" width="282" height="220" rx="14" fill="#141519" stroke="#2a2d35"/>

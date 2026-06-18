@@ -46,6 +46,7 @@ It is intentionally not a replacement for the lead agent's judgment. It is the i
 | Review gates | Prevents `reviewed` status unless changed files, tests, blocker evidence, and handoff are present. |
 | Worktree intelligence | Scans git status, matches changes to owners, flags ownership violations, and ignores noisy build/cache artifacts. |
 | Drift warnings | Surfaces stale running sessions, missing final reports, missing ids, and overlapping write globs. |
+| Impact scoreboard | Estimates time saved, focus blocks recovered, and unlocks lightweight workflow badges. |
 | Second-brain export | Appends a durable run summary to an Obsidian-style daily note. |
 
 ## Quick Start
@@ -78,6 +79,38 @@ The script writes its live state under:
 6. Ingest final reports when agents finish.
 7. Use the review gate before marking work reviewed.
 8. Export the run summary when the swarm is done.
+
+## Impact Scoreboard
+
+The dashboard includes a little motivation engine for humans: estimated time saved, manual effort avoided, coordination cost, focus blocks recovered, and small badges for healthy orchestration habits.
+
+By default it uses a conservative estimate:
+
+- `45m` manual work per full agent slice
+- `8m` coordination overhead per full agent slice
+- `25m` per focus block
+
+Tune it for your own workflow:
+
+```powershell
+py -3 .\scripts\agent_dashboard.py --keep-existing `
+  --manual-minutes-per-agent 60 `
+  --coordination-minutes-per-agent 10 `
+  --focus-block-minutes 25 `
+  --impact-note "Estimate uses one focused manual implementation slice per planned agent."
+```
+
+Agents can also report per-slice estimates in JSON:
+
+```json
+{
+  "name": "Installer",
+  "manualMinutes": 90,
+  "coordinationMinutes": 12
+}
+```
+
+The estimate is meant to make progress feel visible. It is not billing data, and the dashboard says what assumptions it used.
 
 ## Plan Agents
 

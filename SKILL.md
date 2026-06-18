@@ -156,6 +156,22 @@ py -3 C:\Users\Piculiar\.codex\skills\agent-dashboard\scripts\agent_dashboard.py
 
 The local dashboard UI can mark agents reviewed, close them, promote the next wave, copy pending orchestrator commands, preview second-brain summaries, and generate follow-up/status/interrupt command prompts. Actions that require Codex tools, such as `spawn_agent`, `send_input`, or `close_agent`, are represented as pending commands for the orchestrator to execute because the local Python server cannot call Codex tools directly.
 
+## Impact Scoreboard
+
+The dashboard estimates time saved from agent-assisted work and shows it in the overview/workflow scoreboards. The estimate is intentionally approximate: it multiplies tracked agent slices by a manual-work baseline, weights each slice by lifecycle progress, then subtracts orchestration overhead.
+
+Tune the assumptions for a run:
+
+```powershell
+py -3 C:\Users\Piculiar\.codex\skills\agent-dashboard\scripts\agent_dashboard.py --keep-existing `
+  --manual-minutes-per-agent 60 `
+  --coordination-minutes-per-agent 10 `
+  --focus-block-minutes 25 `
+  --impact-note "Estimate uses one focused manual implementation slice per planned agent."
+```
+
+Agents may also report per-slice estimates in JSON with `manualMinutes` and `coordinationMinutes`. Keep the estimate user-facing and honest; it is motivation, not accounting.
+
 ## Recipes
 
 Reusable deployment recipes are built in:
