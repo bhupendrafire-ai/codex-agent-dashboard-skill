@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
   <title id="title">Codex Agent Dashboard preview</title>
-  <desc id="desc">A dark mission control dashboard for Codex agents with lifecycle stats, activity, worktree intelligence, and review gates.</desc>
+  <desc id="desc">A dark mission control dashboard for Codex agents with lifecycle stats, an impact scoreboard, activity, and review gates.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#0f1012"/>
@@ -65,28 +65,29 @@
     <text x="1037" y="202" fill="#9298a3" font-size="13">Saved</text>
     <text x="1037" y="236" fill="#b8f1ca" font-size="34" font-weight="750">4h</text>
   </g>
-  <rect x="342" y="290" width="500" height="220" rx="14" fill="#141519" stroke="#2a2d35"/>
-  <rect x="866" y="290" width="282" height="220" rx="14" fill="#141519" stroke="#2a2d35"/>
-  <text x="366" y="326" fill="#f3f4f7" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="17" font-weight="700">Public Activity</text>
-  <text x="1058" y="326" fill="#9298a3" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12" text-anchor="end">newest first</text>
+  <rect x="342" y="290" width="806" height="220" rx="14" fill="#141519" stroke="#2a2d35"/>
+  <text x="366" y="326" fill="#f3f4f7" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="17" font-weight="700">Impact Scoreboard</text>
+  <text x="1118" y="326" fill="#9298a3" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12" text-anchor="end">estimated by dashboard</text>
+  <rect x="366" y="354" width="258" height="116" rx="10" fill="#101116" stroke="#2d8e52"/>
+  <text x="388" y="384" fill="#9298a3" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13">Estimated time saved</text>
+  <text x="388" y="428" fill="#b8f1ca" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="42" font-weight="780">4h 35m</text>
+  <text x="388" y="452" fill="#9298a3" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12">Flow Captain - conservative baseline</text>
+  <rect x="642" y="354" width="148" height="78" rx="10" fill="#101116" stroke="#2a2d35"/>
+  <text x="662" y="382" fill="#9298a3" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12">Manual avoided</text>
+  <text x="662" y="414" fill="#f3f4f7" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="24" font-weight="720">5h 30m</text>
+  <rect x="806" y="354" width="148" height="78" rx="10" fill="#101116" stroke="#2a2d35"/>
+  <text x="826" y="382" fill="#9298a3" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12">Coordination</text>
+  <text x="826" y="414" fill="#f3f4f7" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="24" font-weight="720">55m</text>
+  <rect x="970" y="354" width="154" height="78" rx="10" fill="#101116" stroke="#2a2d35"/>
+  <text x="990" y="382" fill="#9298a3" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12">Focus blocks</text>
+  <text x="990" y="414" fill="#f3f4f7" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="24" font-weight="720">11 x 25m</text>
   <g font-family="Inter, Segoe UI, Arial, sans-serif">
-    <line x1="366" y1="354" x2="818" y2="354" stroke="#2a2d35"/>
-    <circle cx="378" cy="384" r="4" fill="#79aefc"/>
-    <text x="396" y="389" fill="#f3f4f7" font-size="14" font-weight="650">Installer smoke passed</text>
-    <text x="396" y="410" fill="#9298a3" font-size="12">tests - rollback path verified</text>
-    <circle cx="378" cy="444" r="4" fill="#e9b85d"/>
-    <text x="396" y="449" fill="#f3f4f7" font-size="14" font-weight="650">WPF UX final report ingested</text>
-    <text x="396" y="470" fill="#9298a3" font-size="12">needs review - evidence complete</text>
+    <rect x="642" y="450" width="142" height="38" rx="8" fill="#15202f" stroke="#2f5f9f"/>
+    <text x="658" y="473" fill="#d7dbe3" font-size="12" font-weight="650">Parallel Lift</text>
+    <rect x="794" y="450" width="150" height="38" rx="8" fill="#15251b" stroke="#2d8e52"/>
+    <text x="810" y="473" fill="#d7dbe3" font-size="12" font-weight="650">Evidence Streak</text>
+    <rect x="954" y="450" width="150" height="38" rx="8" fill="#292317" stroke="#9d7830"/>
+    <text x="970" y="473" fill="#d7dbe3" font-size="12" font-weight="650">Deep Work Banked</text>
   </g>
-  <text x="890" y="326" fill="#f3f4f7" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="17" font-weight="700">Review Gate</text>
-  <rect x="890" y="354" width="234" height="42" rx="8" fill="#101116" stroke="#2a2d35"/>
-  <text x="908" y="380" fill="#f3f4f7" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="650">Changed files</text>
-  <text x="1098" y="380" fill="#57d681" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" text-anchor="end">present</text>
-  <rect x="890" y="406" width="234" height="42" rx="8" fill="#101116" stroke="#2a2d35"/>
-  <text x="908" y="432" fill="#f3f4f7" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="650">Tests</text>
-  <text x="1098" y="432" fill="#57d681" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" text-anchor="end">passed</text>
-  <rect x="890" y="458" width="234" height="42" rx="8" fill="#101116" stroke="#2a2d35"/>
-  <text x="908" y="484" fill="#f3f4f7" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="650">Handoff</text>
-  <text x="1098" y="484" fill="#57d681" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" text-anchor="end">ready</text>
   <rect x="342" y="530" width="806" height="6" rx="3" fill="url(#accent)"/>
 </svg>
