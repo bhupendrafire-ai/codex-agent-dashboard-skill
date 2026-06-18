@@ -22,7 +22,7 @@ The script writes:
 - `%LOCALAPPDATA%\CodexAgentDashboard\agent-dashboard.html`
 - `%LOCALAPPDATA%\CodexAgentDashboard\agent-status.json`
 
-With `--serve`, the dashboard is served from `http://127.0.0.1:8765/agent-dashboard.html` by default and auto-refreshes every 5 seconds from the current JSON. The server also exposes routed views at `/overview`, `/workflow`, `/agents`, `/review`, `/diffs`, `/activity`, `/queue`, `/recipes`, `/memory`, and `/agent/<id-or-name>`. To update visible status, rerun the script with current agent data and public activity events, or write a compatible `agent-status.json`.
+With `--serve`, the dashboard is served from `http://127.0.0.1:8765/agent-dashboard.html` by default and auto-refreshes every 5 seconds from the current JSON. The server also exposes routed views at `/overview`, `/workflow`, `/agents`, `/review`, `/diffs`, `/doctor`, `/activity`, `/queue`, `/recipes`, `/memory`, and `/agent/<id-or-name>`. To update visible status, rerun the script with current agent data and public activity events, or write a compatible `agent-status.json`.
 
 The dashboard only shows agents reported by the orchestrator. If the current runtime does not expose a list-all-agents API, say that clearly in the dashboard summary or public activity log.
 
@@ -101,6 +101,8 @@ py -3 C:\Users\Piculiar\.codex\skills\agent-dashboard\scripts\agent_dashboard.py
   --plan-agent-json '{"name":"Installer","summary":"Harden installer gate","ownership":"Installer/Auth boundary","allowedFiles":["src/Installer","src/Auth"],"writeGlobs":["src/Installer/**","src/Auth/**"],"doNotTouch":["src/Billing/**"],"expectedOutputs":["changed files","tests","handoff"],"tests":"installer smoke","priority":"P1","wave":"wave-1","recipe":"release-readiness-matrix","status":"queued"}'
 ```
 
+For read-only scouts, set `readOnly:true` and keep `allowedFiles`/`ownership` specific. Read-only agents do not need `writeGlobs` or changed files to pass the review gate, but they still need verification, blocker status, and a handoff.
+
 Promote the next queued wave according to the dashboard concurrency limit:
 
 ```powershell
@@ -131,6 +133,35 @@ py -3 C:\Users\Piculiar\.codex\skills\agent-dashboard\scripts\agent_dashboard.py
 ```
 
 Final reports set the agent to `needs-review` by default, append a public handoff event, record `lastFinalReportAt`, and preserve the evidence needed by the review gate.
+
+Generate a final-report template from the current row before handoff:
+
+```powershell
+py -3 C:\Users\Piculiar\.codex\skills\agent-dashboard\scripts\agent_dashboard.py --print-final-report-template "Installer"
+```
+
+## Doctor and Hygiene
+
+Run the dashboard doctor before reviews, handoffs, or closing a swarm:
+
+```powershell
+py -3 C:\Users\Piculiar\.codex\skills\agent-dashboard\scripts\agent_dashboard.py --doctor
+```
+
+The doctor summarizes lifecycle counts, drift warnings, missing final reports, missing write scopes, missing active ids, stale pending commands, critical blockers, impact estimate, and suggested next commands. The same health report is visible in the dashboard at `/doctor`.
+
+Dismiss or resolve a stale pending orchestrator command after acting on it:
+
+```powershell
+py -3 C:\Users\Piculiar\.codex\skills\agent-dashboard\scripts\agent_dashboard.py --keep-existing `
+  --set-command-state "1738a5216292|dismissed|Superseded by newer handoff"
+```
+
+Archive an immutable timestamped copy of the current dashboard state:
+
+```powershell
+py -3 C:\Users\Piculiar\.codex\skills\agent-dashboard\scripts\agent_dashboard.py --keep-existing --archive-run-snapshot
+```
 
 Scan a git worktree for diff/worktree intelligence:
 
@@ -241,3 +272,14 @@ The contract tells agents to publish public updates only. They must not write pr
 8. Close the loop by marking agents `reviewed`, `merged`, `closed`, or `blocked` after evidence-backed review.
 
 The webpage is a visibility aid, not an authoritative source. The authoritative evidence remains tool output, changed files, tests, blocker evidence, handoffs, and agent final reports.
+
+## Development Verification
+
+When changing this skill, run:
+
+```powershell
+py -3 -m unittest discover -s tests -v
+py -3 -m py_compile scripts\agent_dashboard.py tests\test_agent_dashboard.py
+```
+
+Also smoke the live dashboard with `--doctor`, `--print-final-report-template`, and the `/doctor` route after starting or reusing the local server.

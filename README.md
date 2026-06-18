@@ -44,8 +44,11 @@ It is intentionally not a replacement for the lead agent's judgment. It is the i
 | Robust JSON input | Uses JSON/file inputs for long summaries, paths, blockers, events, planned agents, and final reports. |
 | Spawn reconciliation | Maps planned agents to real Codex session ids after `spawn_agent` returns. |
 | Review gates | Prevents `reviewed` status unless changed files, tests, blocker evidence, and handoff are present. |
+| Read-only scout mode | Lets explorer/scout agents pass review with `readOnly:true`, verification, blockers, and handoff without fake changed files. |
+| Dashboard Doctor | Reports warnings, missing final reports, missing write scopes, stale commands, missing ids, blockers, and next actions. |
 | Worktree intelligence | Scans git status, matches changes to owners, flags ownership violations, and ignores noisy build/cache artifacts. |
 | Drift warnings | Surfaces stale running sessions, missing final reports, missing ids, and overlapping write globs. |
+| Durable snapshots | Archives timestamped copies of dashboard JSON for post-run handoff or audits. |
 | Impact scoreboard | Estimates time saved, focus blocks recovered, and unlocks lightweight workflow badges. |
 | Second-brain export | Appends a durable run summary to an Obsidian-style daily note. |
 
@@ -78,7 +81,8 @@ The script writes its live state under:
 5. Let agents publish public heartbeats at meaningful milestones.
 6. Ingest final reports when agents finish.
 7. Use the review gate before marking work reviewed.
-8. Export the run summary when the swarm is done.
+8. Run the dashboard doctor and resolve hygiene gaps.
+9. Archive a snapshot and export the run summary when the swarm is done.
 
 ## Impact Scoreboard
 
@@ -131,6 +135,22 @@ py -3 .\scripts\agent_dashboard.py --keep-existing `
     "priority": "P1",
     "wave": "wave-1",
     "recipe": "release-readiness-matrix",
+    "status": "queued"
+  }'
+```
+
+For read-only explorer/scout agents, declare `readOnly:true`. They still need a scoped `ownership`/`allowedFiles`, verification notes, blocker status, and handoff, but they do not need `writeGlobs` or changed files.
+
+```powershell
+py -3 .\scripts\agent_dashboard.py --keep-existing `
+  --plan-agent-json '{
+    "name": "Release Evidence Scout",
+    "summary": "Read release evidence and propose next slices",
+    "ownership": "release docs and evidence artifacts",
+    "allowedFiles": ["docs/**", "artifacts/release/**"],
+    "readOnly": true,
+    "expectedOutputs": ["findings", "risks", "handoff"],
+    "tests": "read-only scan",
     "status": "queued"
   }'
 ```
@@ -211,6 +231,35 @@ Example final report:
 
 Final reports set the agent to `needs-review` by default and record `lastFinalReportAt`.
 
+Generate a template from a current row:
+
+```powershell
+py -3 .\scripts\agent_dashboard.py --print-final-report-template Installer
+```
+
+## Dashboard Doctor
+
+Run the doctor before review, handoff, or closing a swarm:
+
+```powershell
+py -3 .\scripts\agent_dashboard.py --doctor
+```
+
+The doctor prints lifecycle counts, drift warnings, final-report gaps, missing write scopes, missing active ids, stale pending commands, critical blockers, and suggested next commands. The same report is available in the live dashboard at `/doctor`.
+
+Resolve a stale pending command after acting on it:
+
+```powershell
+py -3 .\scripts\agent_dashboard.py --keep-existing `
+  --set-command-state "1738a5216292|dismissed|Superseded by newer handoff"
+```
+
+Archive the current dashboard JSON:
+
+```powershell
+py -3 .\scripts\agent_dashboard.py --keep-existing --archive-run-snapshot
+```
+
 ## Review Gate
 
 An agent cannot be marked `reviewed` unless it has:
@@ -219,6 +268,8 @@ An agent cannot be marked `reviewed` unless it has:
 - tests or verification
 - blocker evidence, even if the answer is `None reported`
 - a handoff
+
+Read-only scouts with `readOnly:true` do not need changed files, because their output is analysis rather than edits.
 
 This is deliberately strict. The dashboard should make integration safer, not just prettier.
 
@@ -293,6 +344,22 @@ Preview without writing:
 py -3 .\scripts\agent_dashboard.py --print-memory-summary
 ```
 
+## Development Verification
+
+Before syncing a changed skill install:
+
+```powershell
+py -3 -m unittest discover -s tests -v
+py -3 -m py_compile scripts\agent_dashboard.py tests\test_agent_dashboard.py
+py -3 .\scripts\agent_dashboard.py --doctor
+```
+
+Then smoke the live server route:
+
+```text
+http://127.0.0.1:8765/doctor
+```
+
 ## Side Panel Etiquette
 
 `--open` is idempotent for the dashboard URL. It records the open URL under:
@@ -313,8 +380,10 @@ Use `--open` once when starting the dashboard. Do not pass it for every heartbea
 +-- scripts/
 |   +-- agent_dashboard.py
 +-- docs/
-    +-- dashboard-screenshot.png
-    +-- dashboard-preview.svg
+|   +-- dashboard-screenshot.png
+|   +-- dashboard-preview.svg
++-- tests/
+    +-- test_agent_dashboard.py
 ```
 
 ## Philosophy

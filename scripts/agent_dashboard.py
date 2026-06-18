@@ -22,6 +22,7 @@ DEFAULT_DIR = pathlib.Path(os.environ.get("LOCALAPPDATA", pathlib.Path.home())) 
 DEFAULT_STATUS = DEFAULT_DIR / "agent-status.json"
 DEFAULT_HTML = DEFAULT_DIR / "agent-dashboard.html"
 DEFAULT_OPEN_STATE = DEFAULT_DIR / "open-state.json"
+DEFAULT_SNAPSHOT_DIR = DEFAULT_DIR / "snapshots"
 DEFAULT_CONCURRENCY_LIMIT = 6
 DEFAULT_MANUAL_MINUTES_PER_AGENT = 45
 DEFAULT_COORDINATION_MINUTES_PER_AGENT = 8
@@ -246,11 +247,16 @@ class LiveDashboardHandler(http.server.SimpleHTTPRequestHandler):
         redirect_to = form_value(form, "returnTo") or self.headers.get("Referer") or "/overview"
         action = form_value(form, "action")
         agent_key = form_value(form, "agent")
+        command_id = form_value(form, "command")
+        command_state = form_value(form, "state")
         note = form_value(form, "note")
 
         with status_lock(self.status_path):
             payload = ensure_control_plane(load_existing(self.status_path))
-            handle_control_action(payload, action, agent_key, note)
+            if action == "set-command-state":
+                set_command_state(payload, command_id, command_state or "dismissed", note)
+            else:
+                handle_control_action(payload, action, agent_key, note)
             write_payload(self.status_path, payload)
 
         self.send_response(303)
@@ -358,6 +364,21 @@ def positive_int(value: object, default: int = 0) -> int:
     return parsed if parsed >= 0 else default
 
 
+def bool_from_value(value: object, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    if text in {"1", "true", "yes", "y", "on", "read-only", "readonly"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 def first_value(data: dict, keys: list[str], default: object = "") -> object:
     for key in keys:
         if key in data and data.get(key) is not None:
@@ -436,6 +457,7 @@ def parse_agent_json(data: dict) -> dict:
     agent["tests"] = text_from_value(first_value(data, ["tests", "testsRun", "verification", "checks"], agent.get("tests", "")))
     agent["blockers"] = text_from_value(first_value(data, ["blockers", "blocker", "blockerStatus", "risks"], agent.get("blockers", "")))
     agent["handoff"] = text_from_value(first_value(data, ["handoff", "nextHandoff", "next_owner", "nextOwner"], agent.get("handoff", "")))
+    agent["readOnly"] = bool_from_value(first_value(data, ["readOnly", "read_only", "readonly", "readMode"], agent.get("readOnly", False)))
     manual_minutes = positive_int(first_value(data, ["manualMinutes", "manual_minutes", "estimatedManualMinutes", "estimated_manual_minutes"], agent.get("manualMinutes", 0)))
     coordination_minutes = positive_int(first_value(data, ["coordinationMinutes", "coordination_minutes", "agentMinutes", "agent_minutes"], agent.get("coordinationMinutes", 0)))
     if manual_minutes:
@@ -583,19 +605,25 @@ def active_for_ownership(agent: dict) -> bool:
     return agent_status(agent) not in {"reviewed", "merged", "closed", "failed"}
 
 
+def agent_is_read_only(agent: dict) -> bool:
+    return bool_from_value(agent.get("readOnly"), False)
+
+
 def refresh_ownership_warnings(agents: list[dict]) -> None:
     for agent in agents:
         warnings: list[str] = []
-        if active_for_ownership(agent) and not agent.get("writeGlobs"):
+        if active_for_ownership(agent) and not agent_is_read_only(agent) and not agent.get("writeGlobs"):
             warnings.append("missing planned write globs")
+        if active_for_ownership(agent) and agent_is_read_only(agent) and not (agent.get("allowedFiles") or agent.get("ownership")):
+            warnings.append("read-only agent is missing its read scope")
         agent["ownershipWarnings"] = warnings
 
     for index, agent in enumerate(agents):
-        if not active_for_ownership(agent):
+        if not active_for_ownership(agent) or agent_is_read_only(agent):
             continue
         write_globs = agent.get("writeGlobs") if isinstance(agent.get("writeGlobs"), list) else []
         for other in agents[index + 1:]:
-            if not active_for_ownership(other):
+            if not active_for_ownership(other) or agent_is_read_only(other):
                 continue
             other_globs = other.get("writeGlobs") if isinstance(other.get("writeGlobs"), list) else []
             for left in write_globs:
@@ -622,6 +650,7 @@ def normalize_agent(agent: dict) -> dict:
     agent.setdefault("writeGlobs", [])
     agent.setdefault("doNotTouch", [])
     agent.setdefault("expectedOutputs", [])
+    agent["readOnly"] = agent_is_read_only(agent)
     for list_key in ["allowedFiles", "writeGlobs", "doNotTouch", "expectedOutputs", "changedFiles", "ownershipWarnings"]:
         normalize_list_field(agent, list_key)
     if not agent.get("writeGlobs") and agent.get("allowedFiles"):
@@ -781,7 +810,7 @@ def set_agent_status(agent: dict, status: str, note: str = "") -> None:
 def review_gate_issues(agent: dict) -> list[str]:
     issues: list[str] = []
     changed_files = agent.get("changedFiles") if isinstance(agent.get("changedFiles"), list) else []
-    if not changed_files:
+    if not agent_is_read_only(agent) and not changed_files:
         issues.append("missing changed files")
     if not text_from_value(agent.get("tests")):
         issues.append("missing tests or verification")
@@ -882,6 +911,8 @@ def ingest_final_report(payload: dict, report: dict) -> dict:
             value = update.get(key)
             if text_from_value(value):
                 agent[key] = value
+        if any(key in report for key in ["readOnly", "read_only", "readonly", "readMode"]):
+            agent["readOnly"] = agent_is_read_only(update)
         for key in ["changedFiles", "allowedFiles", "writeGlobs", "doNotTouch", "expectedOutputs"]:
             value = update.get(key)
             if isinstance(value, list) and value:
@@ -966,6 +997,201 @@ def dashboard_warnings(payload: dict, agents: list[dict]) -> list[str]:
             if issues:
                 warnings.append(f"{name}: reviewed but review evidence is incomplete ({'; '.join(issues)})")
     return warnings
+
+
+def pending_commands(payload: dict) -> list[dict]:
+    return [
+        command for command in payload.get("commands", [])
+        if isinstance(command, dict) and str(command.get("state") or "pending").lower() == "pending"
+    ]
+
+
+def command_age_minutes(command: dict) -> float | None:
+    created_at = parse_datetime_value(command.get("createdAt"))
+    if not created_at:
+        return None
+    return (datetime.now().astimezone() - created_at).total_seconds() / 60
+
+
+def set_command_state(payload: dict, command_id: str, state: str, note: str = "") -> bool:
+    allowed_states = {"pending", "done", "dismissed", "failed"}
+    normalized_state = state.strip().lower()
+    if normalized_state not in allowed_states:
+        normalized_state = "dismissed"
+    for command in payload.get("commands", []):
+        if not isinstance(command, dict):
+            continue
+        if str(command.get("id") or "") == command_id:
+            command["state"] = normalized_state
+            command["updatedAt"] = utc_now()
+            if note:
+                command["note"] = note
+            add_event(
+                payload,
+                str(command.get("agent") or "Orchestrator"),
+                "status",
+                f"Command marked {normalized_state}",
+                note or str(command.get("message") or command_id),
+            )
+            return True
+    add_event(payload, "Orchestrator", "blocked", "Command state update ignored", f"Unknown command id: {command_id}")
+    return False
+
+
+def health_summary(payload: dict) -> dict:
+    payload = ensure_control_plane(payload)
+    agents = payload.get("agents", [])
+    counts = count_agents(agents)
+    warnings = dashboard_warnings(payload, agents)
+    final_report_gaps = [
+        agent for agent in agents
+        if agent_status(agent) in REVIEW_READY_STATES and not text_from_value(agent.get("lastFinalReportAt"))
+    ]
+    write_scope_gaps = [
+        agent for agent in agents
+        if active_for_ownership(agent) and not agent_is_read_only(agent) and not agent.get("writeGlobs")
+    ]
+    missing_ids = [
+        agent for agent in agents
+        if agent_status(agent) in {"running", "completed", "needs-review"} and not text_from_value(agent.get("id"))
+    ]
+    commands = pending_commands(payload)
+    stale_commands = [
+        command for command in commands
+        if (command_age_minutes(command) or 0) >= 60
+    ]
+    blocker_map: dict[str, list[str]] = {}
+    for agent in agents:
+        blocker = text_from_value(agent.get("blockers"))
+        if not blocker or blocker.lower() in {"none", "none reported", "no blockers"}:
+            continue
+        blocker_map.setdefault(blocker, []).append(str(agent.get("name") or agent.get("id") or "agent"))
+    return {
+        "counts": counts,
+        "warningCount": len(warnings),
+        "warnings": warnings,
+        "finalReportGaps": final_report_gaps,
+        "writeScopeGaps": write_scope_gaps,
+        "missingIds": missing_ids,
+        "pendingCommands": commands,
+        "staleCommands": stale_commands,
+        "blockers": blocker_map,
+        "impact": compute_impact(payload, agents, counts),
+        "worktree": payload.get("worktree", {}),
+        "workflow": payload.get("workflow", {}),
+    }
+
+
+def render_doctor_report(payload: dict) -> str:
+    summary = health_summary(payload)
+    counts = summary["counts"]
+    impact = summary["impact"]
+    workflow = summary["workflow"] if isinstance(summary.get("workflow"), dict) else {}
+    worktree = summary["worktree"] if isinstance(summary.get("worktree"), dict) else {}
+    lines = [
+        "# Agent Dashboard Doctor",
+        f"- Objective: {workflow.get('objective') or 'Not recorded'}",
+        f"- Agents: {sum(counts.values())}",
+        f"- States: " + ", ".join(f"{state}={count}" for state, count in counts.items() if count),
+        f"- Warnings: {summary['warningCount']}",
+        f"- Pending commands: {len(summary['pendingCommands'])}",
+        f"- Stale pending commands: {len(summary['staleCommands'])}",
+        f"- Estimated saved time: {format_minutes(int(impact.get('savedMinutes', 0)))} ({impact.get('rank')})",
+    ]
+    if worktree:
+        lines.append(f"- Worktree: {worktree.get('path') or 'not scanned'}; uncommitted={bool(worktree.get('uncommitted'))}")
+
+    lines.extend(["", "## Gaps"])
+    gap_lines = [
+        ("Final reports missing", summary["finalReportGaps"]),
+        ("Write scopes missing", summary["writeScopeGaps"]),
+        ("Session ids missing", summary["missingIds"]),
+    ]
+    for label, agents in gap_lines:
+        if agents:
+            names = ", ".join(str(agent.get("name") or agent.get("id") or "agent") for agent in agents[:12])
+            extra = f" (+{len(agents) - 12} more)" if len(agents) > 12 else ""
+            lines.append(f"- {label}: {names}{extra}")
+        else:
+            lines.append(f"- {label}: none")
+
+    if summary["warnings"]:
+        lines.extend(["", "## Warnings"])
+        for warning in summary["warnings"][:20]:
+            lines.append(f"- {warning}")
+        if len(summary["warnings"]) > 20:
+            lines.append(f"- ...{len(summary['warnings']) - 20} more")
+
+    if summary["pendingCommands"]:
+        lines.extend(["", "## Pending Commands"])
+        for command in summary["pendingCommands"][:12]:
+            age = command_age_minutes(command)
+            age_text = age_label(age) if age is not None else "unknown age"
+            lines.append(f"- {command.get('id')}: {command.get('agent')} / {command.get('kind')} / {age_text} / {command.get('message')}")
+
+    if summary["blockers"]:
+        lines.extend(["", "## Critical Blockers"])
+        for blocker, agents in list(summary["blockers"].items())[:12]:
+            owner_text = ", ".join(agents[:4])
+            extra = f" (+{len(agents) - 4} more)" if len(agents) > 4 else ""
+            lines.append(f"- {owner_text}{extra}: {blocker}")
+
+    lines.extend(["", "## Suggested Next Actions"])
+    if summary["finalReportGaps"]:
+        first = summary["finalReportGaps"][0]
+        lines.append(f"- Generate a final-report template: --print-final-report-template \"{first.get('name') or first.get('id')}\"")
+    if summary["writeScopeGaps"]:
+        first = summary["writeScopeGaps"][0]
+        lines.append(f"- Add writeGlobs or mark readOnly=true for: {first.get('name') or first.get('id')}")
+    if summary["staleCommands"]:
+        first = summary["staleCommands"][0]
+        lines.append(f"- Resolve stale command: --set-command-state \"{first.get('id')}|dismissed|superseded or completed\"")
+    if not (summary["finalReportGaps"] or summary["writeScopeGaps"] or summary["staleCommands"]):
+        lines.append("- No hygiene actions needed; keep heartbeats and final reports current.")
+    return "\n".join(lines).strip() + "\n"
+
+
+def build_final_report_template(payload: dict, agent_ref_value: str) -> dict:
+    payload = ensure_control_plane(payload)
+    agent = find_agent(payload.get("agents", []), agent_ref_value) if agent_ref_value else None
+    if not agent:
+        agent = normalize_agent({"name": agent_ref_value or "AGENT_NAME", "status": "completed"})
+    return {
+        "name": agent.get("name") or agent_ref_value or "AGENT_NAME",
+        "id": agent.get("id") or "",
+        "status": "completed",
+        "summary": agent.get("summary") or "<public result summary>",
+        "ownership": agent.get("ownership") or "<owned files/modules>",
+        "readOnly": agent_is_read_only(agent),
+        "changedFiles": agent.get("changedFiles") if isinstance(agent.get("changedFiles"), list) else [],
+        "allowedFiles": agent.get("allowedFiles") if isinstance(agent.get("allowedFiles"), list) else [],
+        "writeGlobs": agent.get("writeGlobs") if isinstance(agent.get("writeGlobs"), list) else [],
+        "doNotTouch": agent.get("doNotTouch") if isinstance(agent.get("doNotTouch"), list) else [],
+        "expectedOutputs": agent.get("expectedOutputs") if isinstance(agent.get("expectedOutputs"), list) else ["changed files", "tests", "blockers", "handoff"],
+        "tests": agent.get("tests") or "<verification run or reason tests were not run>",
+        "blockers": agent.get("blockers") or "None reported",
+        "handoff": agent.get("handoff") or "<next owner/action>",
+        "events": [
+            {
+                "agent": agent.get("name") or agent_ref_value or "AGENT_NAME",
+                "kind": "handoff",
+                "message": "Final report ready",
+                "detail": "Changed files, verification, blockers, and handoff provided.",
+            }
+        ],
+    }
+
+
+def archive_run_snapshot(payload: dict, snapshot_dir: pathlib.Path = DEFAULT_SNAPSHOT_DIR) -> pathlib.Path:
+    payload = ensure_control_plane(payload)
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+    path = snapshot_dir / f"agent-status-{stamp}.json"
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    payload.setdefault("snapshots", []).append({"path": str(path), "timestamp": utc_now()})
+    payload["generatedAt"] = utc_now()
+    add_event(payload, "Orchestrator", "handoff", "Archived dashboard snapshot", str(path))
+    return path
 
 
 def promote_next_agents(payload: dict, note: str = "") -> int:
@@ -1198,11 +1424,12 @@ def handoff_ready(agent: dict) -> str:
 
 def protocol_issues(agent: dict) -> list[str]:
     issues: list[str] = []
+    read_only = agent_is_read_only(agent)
     if not str(agent.get("ownership") or "").strip():
         issues.append("missing ownership scope")
     if not agent.get("allowedFiles"):
         issues.append("missing allowed files/modules")
-    if not agent.get("writeGlobs"):
+    if not read_only and not agent.get("writeGlobs"):
         issues.append("missing write globs")
     if not agent.get("expectedOutputs"):
         issues.append("missing expected outputs")
@@ -1210,7 +1437,7 @@ def protocol_issues(agent: dict) -> list[str]:
         issues.append("missing heartbeat cadence")
     if not str(agent.get("testExpectations") or agent.get("tests") or "").strip():
         issues.append("missing test expectations")
-    if not agent.get("doNotTouch"):
+    if not read_only and not agent.get("doNotTouch"):
         issues.append("missing do-not-touch scope")
     return issues
 
@@ -1346,6 +1573,8 @@ def route_from_path(path: str) -> tuple[str, str] | None:
         return ("review", "")
     if normalized == "/diffs":
         return ("diffs", "")
+    if normalized == "/doctor":
+        return ("doctor", "")
     if normalized == "/recipes":
         return ("recipes", "")
     if normalized == "/memory":
@@ -1569,6 +1798,7 @@ def render_view_tabs(current: str) -> str:
         ("agents", "Agents", "/agents"),
         ("review", "Review", "/review"),
         ("diffs", "Diffs", "/diffs"),
+        ("doctor", "Doctor", "/doctor"),
         ("activity", "Activity", "/activity"),
         ("queue", "Queue", "/queue"),
         ("recipes", "Recipes", "/recipes"),
@@ -1846,6 +2076,18 @@ def render_action_form(action: str, label: str, agent: dict | None = None, note:
     """
 
 
+def render_command_state_form(command_id: str, state: str, label: str, note: str = "") -> str:
+    return f"""
+      <form class="inline-action" method="post" action="/action">
+        <input type="hidden" name="action" value="set-command-state">
+        <input type="hidden" name="command" value="{esc(command_id)}">
+        <input type="hidden" name="state" value="{esc(state)}">
+        <input type="hidden" name="note" value="{esc(note)}">
+        <button type="submit">{esc(label)}</button>
+      </form>
+    """
+
+
 def render_copy_button(label: str, value: str) -> str:
     return f'<button type="button" class="copy-button" data-copy="{esc(value)}">{esc(label)}</button>'
 
@@ -1864,7 +2106,10 @@ def render_pending_commands(payload: dict) -> str:
                 <strong>{esc(command.get("message"))}</strong>
                 <p>{esc(command.get("agent"))} &middot; {esc(command.get("kind"))} &middot; {esc(compact_time(command.get("createdAt")))}</p>
               </div>
-              {render_copy_button("Copy", prompt)}
+              <div class="action-bar">
+                {render_copy_button("Copy", prompt)}
+                {render_command_state_form(str(command.get("id") or ""), "dismissed", "Dismiss", "Dismissed from dashboard")}
+              </div>
             </div>
             """
         )
@@ -2041,6 +2286,17 @@ def render_memory_view(payload: dict) -> str:
     return render_panel("Second Brain", "durable run summary", body)
 
 
+def render_doctor_view(payload: dict) -> str:
+    summary = health_summary(payload)
+    gap_count = (
+        len(summary["finalReportGaps"])
+        + len(summary["writeScopeGaps"])
+        + len(summary["missingIds"])
+        + len(summary["staleCommands"])
+    )
+    return render_panel("Dashboard Doctor", f"{gap_count} hygiene gaps", f"<pre>{esc(render_doctor_report(payload))}</pre>")
+
+
 def render_agent_detail(payload: dict, agents: list[dict], agent_ref_value: str) -> str:
     agent = find_agent(agents, agent_ref_value)
     if not agent:
@@ -2119,6 +2375,8 @@ def render_main_view(payload: dict, agents: list[dict], counts: dict[str, int], 
         return render_review_view(payload, agents)
     if view == "diffs":
         return render_diffs_view(payload, agents)
+    if view == "doctor":
+        return render_doctor_view(payload)
     if view == "activity":
         return render_activity_view(payload, agents)
     if view == "queue":
@@ -2962,13 +3220,16 @@ def main() -> int:
     parser.add_argument("--serve", action="store_true", help="Run a local live dashboard server.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--doctor", action="store_true", help="Print a dashboard health report with warnings, hygiene gaps, blockers, and suggested actions.")
     parser.add_argument("--print-heartbeat-contract", action="store_true", help="Print the prompt block to include when spawning a future agent.")
     parser.add_argument("--agent-name", default="AGENT_NAME", help="Agent name to use with --print-heartbeat-contract.")
     parser.add_argument("--agent-id", default="", help="Agent id to use with --print-heartbeat-contract when already known.")
+    parser.add_argument("--print-final-report-template", default="", help="Print a JSON final-report template for an agent id or name.")
     parser.add_argument("--plan-agent", action="append", default=[], help="name|summary|ownership|allowedFiles|doNotTouch|expectedOutputs|tests|priority|wave|recipe|status")
     parser.add_argument("--plan-agent-json", action="append", default=[], help="Planned-agent JSON object/array, or @path to JSON.")
     parser.add_argument("--plan-agent-json-file", action="append", default=[], help="Path to planned-agent JSON object/array.")
     parser.add_argument("--set-status", action="append", default=[], help="agent-id-or-name|status|note")
+    parser.add_argument("--set-command-state", action="append", default=[], help="command-id|state|note, where state is pending, done, dismissed, or failed")
     parser.add_argument("--control-action", action="append", default=[], help="agent-id-or-name|action|note")
     parser.add_argument("--reconcile-agent-id", action="append", default=[], help="planned-agent-name-or-id|actual-agent-id|optional-display-name")
     parser.add_argument("--final-report-json", action="append", default=[], help="Final report JSON object/array, or @path to JSON.")
@@ -2981,10 +3242,13 @@ def main() -> int:
     parser.add_argument("--impact-note", default="", help="Explain the assumptions behind the impact/time-saved estimate.")
     parser.add_argument("--scan-worktree", default="", help="Scan a git worktree for diff/worktree intelligence.")
     parser.add_argument("--scan-ignore", action="append", default=[], help="Additional git status path/glob pattern to ignore during --scan-worktree.")
+    parser.add_argument("--archive-run-snapshot", action="store_true", help="Write an immutable timestamped copy of the current dashboard JSON under the local snapshots folder.")
     parser.add_argument("--export-second-brain", action="store_true", help="Append a run summary to the second-brain daily note.")
     parser.add_argument("--print-memory-summary", action="store_true", help="Print the second-brain run summary without writing it.")
     parser.add_argument("--print-recipe", default="", help="Print a reusable deployment recipe prompt by key.")
     args = parser.parse_args()
+    status_path = pathlib.Path(args.status_file)
+    html_path = pathlib.Path(args.html_file)
 
     if args.print_heartbeat_contract:
         print(heartbeat_contract(args.agent_name, args.agent_id))
@@ -2999,13 +3263,18 @@ def main() -> int:
         print(f"{recipe['title']}\nPurpose: {recipe['purpose']}\nAgent type: {recipe['agentType']}\nExpected outputs: {outputs}")
         return 0
 
+    if args.doctor:
+        print(render_doctor_report(load_existing(status_path)))
+        return 0
+
+    if args.print_final_report_template:
+        print(json.dumps(build_final_report_template(load_existing(status_path), args.print_final_report_template), indent=2))
+        return 0
+
     if args.print_memory_summary:
-        status_path = pathlib.Path(args.status_file)
         print(render_memory_summary(load_existing(status_path)))
         return 0
 
-    status_path = pathlib.Path(args.status_file)
-    html_path = pathlib.Path(args.html_file)
     try:
         agent_json_records = json_records_from_inputs(args.agent_json, args.agent_json_file, ["agents", "agent"])
         planned_json_records = json_records_from_inputs(args.plan_agent_json, args.plan_agent_json_file, ["agents", "plannedAgents", "planned_agents", "plan"])
@@ -3064,6 +3333,11 @@ def main() -> int:
                 else:
                     set_agent_status(agent, status, note)
                     add_event(payload, agent.get("name") or agent_key, "status", f"Status set to {status}", note)
+        for raw in args.set_command_state:
+            fields = [field.strip() for field in raw.split("|")]
+            fields += [""] * (4 - len(fields))
+            command_id, state, note = fields[0], fields[1], fields[2]
+            set_command_state(payload, command_id, state, note)
         for raw in args.control_action:
             fields = [field.strip() for field in raw.split("|")]
             fields += [""] * (3 - len(fields))
@@ -3071,6 +3345,8 @@ def main() -> int:
             handle_control_action(payload, action, agent_key, note)
         if args.scan_worktree:
             scan_worktree(payload, args.scan_worktree, args.scan_ignore)
+        if args.archive_run_snapshot:
+            archive_run_snapshot(payload)
         if args.export_second_brain:
             export_second_brain(payload)
         write_payload(status_path, ensure_control_plane(payload))
