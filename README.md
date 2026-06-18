@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/dashboard-preview.svg" alt="Codex Agent Dashboard preview" width="100%">
+  <img src="docs/dashboard-screenshot.png" alt="Codex Agent Dashboard overview with Impact Scoreboard" width="100%">
 </p>
 
 <h1 align="center">Codex Agent Dashboard Skill</h1>
@@ -313,6 +313,7 @@ Use `--open` once when starting the dashboard. Do not pass it for every heartbea
 +-- scripts/
 |   +-- agent_dashboard.py
 +-- docs/
+    +-- dashboard-screenshot.png
     +-- dashboard-preview.svg
 ```
 
