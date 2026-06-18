@@ -27,6 +27,9 @@ DEFAULT_CONCURRENCY_LIMIT = 6
 DEFAULT_MANUAL_MINUTES_PER_AGENT = 45
 DEFAULT_COORDINATION_MINUTES_PER_AGENT = 8
 DEFAULT_FOCUS_BLOCK_MINUTES = 25
+IMPACT_READ_ONLY_WEIGHT = 0.35
+IMPACT_META_WORK_WEIGHT = 0.65
+IMPACT_NO_EDIT_WEIGHT = 0.50
 DEFAULT_STALE_MINUTES = {
     "planned": 120,
     "queued": 120,
@@ -113,53 +116,53 @@ IMPACT_PROGRESS_WEIGHTS = {
 }
 RECIPES = {
     "explorer-swarm": {
-        "title": "Explorer Swarm",
-        "purpose": "Answer independent codebase questions quickly before implementation.",
+        "title": "Quick Code Search",
+        "purpose": "Answer separate code questions before building.",
         "agentType": "explorer",
         "defaultStatus": "queued",
-        "outputs": ["specific findings", "file references", "risks", "recommended next worker slices"],
+        "outputs": ["specific findings", "file references", "risks", "recommended next work items"],
     },
     "implementation-workers": {
-        "title": "Implementation Workers",
-        "purpose": "Split production changes into disjoint ownership scopes.",
+        "title": "Build Workers",
+        "purpose": "Split code changes into separate work areas.",
         "agentType": "worker",
         "defaultStatus": "queued",
-        "outputs": ["changed files", "tests run", "blockers", "handoff"],
+        "outputs": ["changed files", "tests run", "blockers", "next step"],
     },
     "test-fix-wave": {
-        "title": "Test-Fix Wave",
-        "purpose": "Assign focused test failures or build failures to bounded workers.",
+        "title": "Test Fix Group",
+        "purpose": "Assign focused test failures or build failures to workers.",
         "agentType": "worker",
         "defaultStatus": "queued",
-        "outputs": ["failing command", "root cause", "patch", "verification command"],
+        "outputs": ["failing command", "cause", "patch", "check command"],
     },
     "pr-review-response": {
-        "title": "PR Review Response Wave",
-        "purpose": "Resolve independent PR review comments without overlapping edits.",
+        "title": "PR Comment Fix Group",
+        "purpose": "Fix separate PR review comments without overlapping edits.",
         "agentType": "worker",
         "defaultStatus": "queued",
-        "outputs": ["comment addressed", "files changed", "review note", "tests"],
+        "outputs": ["comment fixed", "files changed", "review note", "tests"],
     },
     "migration-refactor-split": {
-        "title": "Migration / Refactor Split",
-        "purpose": "Partition a migration by package, API boundary, or data model.",
+        "title": "Migration Split",
+        "purpose": "Split a migration by package, API area, or data model.",
         "agentType": "worker",
         "defaultStatus": "queued",
-        "outputs": ["scope migrated", "compat notes", "tests", "follow-up risks"],
+        "outputs": ["area migrated", "compatibility notes", "tests", "follow-up risks"],
     },
     "bug-investigation-ladder": {
-        "title": "Bug Investigation Ladder",
-        "purpose": "Run reproduction, trace, hypothesis, patch, and regression lanes.",
+        "title": "Bug Investigation Steps",
+        "purpose": "Run reproduce, trace, likely cause, fix, and retest steps.",
         "agentType": "default",
         "defaultStatus": "queued",
-        "outputs": ["repro", "suspected cause", "patch path", "regression proof"],
+        "outputs": ["reproduction", "suspected cause", "patch path", "retest proof"],
     },
     "release-readiness-matrix": {
-        "title": "Release Readiness Matrix",
-        "purpose": "Assign release gates such as installer, smoke, rollback, docs, and parity.",
+        "title": "Release Checklist",
+        "purpose": "Assign release checks such as installer, smoke test, rollback, docs, and parity.",
         "agentType": "worker",
         "defaultStatus": "queued",
-        "outputs": ["gate status", "evidence", "blockers", "release recommendation"],
+        "outputs": ["check status", "evidence", "blockers", "release advice"],
     },
 }
 HEARTBEAT_CONTRACT_TEMPLATE = """Dashboard heartbeat contract
@@ -550,7 +553,7 @@ def write_status(path: pathlib.Path, title: str, agents: list[dict], events: lis
         "schemaVersion": 2,
         "title": title,
         "generatedAt": utc_now(),
-        "note": "Private chain-of-thought is not shown. This page shows public agent status, reported actions, changed files, tests, blockers, and handoffs written by the orchestrator.",
+        "note": "Private reasoning is not shown. This page shows each agent's status, actions taken, changed files, tests, blockers, and next steps.",
         "agents": agents,
         "events": events,
     })
@@ -613,9 +616,9 @@ def refresh_ownership_warnings(agents: list[dict]) -> None:
     for agent in agents:
         warnings: list[str] = []
         if active_for_ownership(agent) and not agent_is_read_only(agent) and not agent.get("writeGlobs"):
-            warnings.append("missing planned write globs")
+            warnings.append("allowed edit paths are missing")
         if active_for_ownership(agent) and agent_is_read_only(agent) and not (agent.get("allowedFiles") or agent.get("ownership")):
-            warnings.append("read-only agent is missing its read scope")
+            warnings.append("read-only agent is missing the files it may read")
         agent["ownershipWarnings"] = warnings
 
     for index, agent in enumerate(agents):
@@ -629,8 +632,8 @@ def refresh_ownership_warnings(agents: list[dict]) -> None:
             for left in write_globs:
                 for right in other_globs:
                     if scopes_overlap(str(left), str(right)):
-                        message = f"write glob overlap with {other.get('name')}: {left} <> {right}"
-                        other_message = f"write glob overlap with {agent.get('name')}: {right} <> {left}"
+                        message = f"edit path overlaps with {other.get('name')}: {left} <> {right}"
+                        other_message = f"edit path overlaps with {agent.get('name')}: {right} <> {left}"
                         if message not in agent["ownershipWarnings"]:
                             agent["ownershipWarnings"].append(message)
                         if other_message not in other["ownershipWarnings"]:
@@ -655,7 +658,7 @@ def normalize_agent(agent: dict) -> dict:
         normalize_list_field(agent, list_key)
     if not agent.get("writeGlobs") and agent.get("allowedFiles"):
         agent["writeGlobs"] = list(agent.get("allowedFiles", []))
-    agent.setdefault("heartbeatCadence", "on start, meaningful read, edit, test, blocker, and final handoff")
+    agent.setdefault("heartbeatCadence", "on start, meaningful read, edit, test, blocker, and final update")
     agent.setdefault("testExpectations", agent.get("tests") or "")
     agent.setdefault("review", {"state": review_state_for(status), "notes": "", "reviewedAt": ""})
     agent.setdefault("worktree", {})
@@ -684,7 +687,7 @@ def ensure_control_plane(payload: dict) -> dict:
     payload.setdefault("schemaVersion", 2)
     payload.setdefault("title", "Codex Agent Dashboard")
     payload.setdefault("generatedAt", utc_now())
-    payload.setdefault("note", "Private chain-of-thought is not shown. This page shows public agent status, reported actions, changed files, tests, blockers, and handoffs written by the orchestrator.")
+    payload.setdefault("note", "Private reasoning is not shown. This page shows each agent's status, actions taken, changed files, tests, blockers, and next steps.")
     payload.setdefault("agents", [])
     payload.setdefault("events", [])
     payload.setdefault("commands", [])
@@ -696,7 +699,7 @@ def ensure_control_plane(payload: dict) -> dict:
     impact.setdefault("manualMinutesPerAgent", DEFAULT_MANUAL_MINUTES_PER_AGENT)
     impact.setdefault("coordinationMinutesPerAgent", DEFAULT_COORDINATION_MINUTES_PER_AGENT)
     impact.setdefault("focusBlockMinutes", DEFAULT_FOCUS_BLOCK_MINUTES)
-    impact.setdefault("note", "Estimated from agent work slices, progress state, and orchestration overhead.")
+    impact.setdefault("note", "Estimated from agent work items, status, and time spent coordinating.")
     payload["impact"] = impact
     workflow = payload["workflow"] if isinstance(payload.get("workflow"), dict) else {}
     workflow.setdefault("objective", "")
@@ -719,8 +722,8 @@ def heartbeat_contract(
     ownership: str = "specified in your spawn prompt",
     allowed_files: str = "specified in your spawn prompt",
     do_not_touch: str = "anything outside your ownership scope",
-    expected_outputs: str = "changed files, verification, blockers, and handoff",
-    heartbeat_cadence: str = "on start, meaningful read, edit, test, blocker, and final handoff",
+    expected_outputs: str = "changed files, verification, blockers, and next step",
+    heartbeat_cadence: str = "on start, meaningful read, edit, test, blocker, and final update",
     test_expectations: str = "run focused checks for your scope or report why blocked",
 ) -> str:
     return HEARTBEAT_CONTRACT_TEMPLATE.format(
@@ -811,13 +814,13 @@ def review_gate_issues(agent: dict) -> list[str]:
     issues: list[str] = []
     changed_files = agent.get("changedFiles") if isinstance(agent.get("changedFiles"), list) else []
     if not agent_is_read_only(agent) and not changed_files:
-        issues.append("missing changed files")
+        issues.append("changed files are missing")
     if not text_from_value(agent.get("tests")):
-        issues.append("missing tests or verification")
+        issues.append("tests or checks are missing")
     if not text_from_value(agent.get("blockers")):
-        issues.append("missing blocker evidence, even if the answer is none")
+        issues.append("blocker status is missing (write none if nothing is stuck)")
     if not text_from_value(agent.get("handoff")):
-        issues.append("missing handoff")
+        issues.append("next step is missing")
     return issues
 
 
@@ -827,26 +830,26 @@ def mark_agent_reviewed(payload: dict, agent: dict, note: str = "") -> bool:
     if issues:
         review["state"] = "blocked"
         review["gateIssues"] = issues
-        review["notes"] = note or "Review gate blocked until required evidence is reported."
+        review["notes"] = note or "Cannot mark checked until the missing details are added."
         agent["review"] = review
         set_agent_status(agent, "needs-review", review["notes"])
         agent["review"]["state"] = "blocked"
         agent["review"]["gateIssues"] = issues
         detail = "; ".join(issues)
-        add_event(payload, agent.get("name") or "agent", "review", "Review gate blocked", detail)
+        add_event(payload, agent.get("name") or "agent", "review", "Review needs more details", detail)
         add_command(
             payload,
             agent.get("name") or "agent",
             "request-evidence",
-            "Collect required review evidence before marking reviewed",
-            "Ask the agent for changed files, tests or verification, blocker status, and handoff.",
+            "Add missing review details before marking checked",
+            "Ask the agent for changed files, tests/checks, blocker status, and the next step.",
         )
         return False
     review["state"] = "passed"
     review["gateIssues"] = []
     agent["review"] = review
     set_agent_status(agent, "reviewed", note)
-    add_event(payload, agent.get("name") or "agent", "reviewed", "Marked reviewed", note)
+    add_event(payload, agent.get("name") or "agent", "reviewed", "Marked checked", note)
     return True
 
 
@@ -855,7 +858,7 @@ def reconcile_agent_id(payload: dict, agent_ref_value: str, actual_id: str, actu
     if not agent and actual_name:
         agent = find_agent(payload.get("agents", []), actual_name)
     if not actual_id.strip():
-        add_event(payload, "Orchestrator", "blocked", "Agent id reconciliation skipped", "missing actual id")
+        add_event(payload, "Orchestrator", "blocked", "Agent session ID link skipped", "missing session ID")
         return None
     if not agent:
         agent = normalize_agent(
@@ -863,7 +866,7 @@ def reconcile_agent_id(payload: dict, agent_ref_value: str, actual_id: str, actu
                 "name": actual_name or agent_ref_value or "Spawned agent",
                 "id": actual_id.strip(),
                 "status": "running",
-                "summary": "Spawned agent id reconciled after launch.",
+                "summary": "Agent session ID linked after launch.",
                 "ownership": "",
                 "updatedAt": utc_now(),
             }
@@ -880,7 +883,7 @@ def reconcile_agent_id(payload: dict, agent_ref_value: str, actual_id: str, actu
     agent["id"] = actual_id.strip()
     agent["aliases"] = aliases
     agent["updatedAt"] = utc_now()
-    add_event(payload, agent.get("name") or actual_id, "status", "Reconciled spawned agent id", actual_id.strip())
+    add_event(payload, agent.get("name") or actual_id, "status", "Linked agent session ID", actual_id.strip())
     return agent
 
 
@@ -894,7 +897,7 @@ def ingest_final_report(payload: dict, report: dict) -> dict:
     if not agent:
         agent = update
         payload.setdefault("agents", []).append(agent)
-        set_agent_status(agent, final_status, "Final report ingested; awaiting lead review.")
+        set_agent_status(agent, final_status, "Final report added; waiting for lead review.")
     else:
         for key in [
             "name",
@@ -917,12 +920,12 @@ def ingest_final_report(payload: dict, report: dict) -> dict:
             value = update.get(key)
             if isinstance(value, list) and value:
                 agent[key] = value
-        set_agent_status(agent, final_status, "Final report ingested; awaiting lead review.")
+        set_agent_status(agent, final_status, "Final report added; waiting for lead review.")
 
     agent["lastFinalReportAt"] = utc_now()
     agent["finalReport"] = {key: value for key, value in report.items() if key != "events"}
     agent["updatedAt"] = utc_now()
-    add_event(payload, agent.get("name") or update.get("id") or "agent", "handoff", "Final report ingested", agent.get("summary") or "")
+    add_event(payload, agent.get("name") or update.get("id") or "agent", "handoff", "Final report added", agent.get("summary") or "")
 
     report_events = report.get("events")
     if isinstance(report_events, list):
@@ -972,15 +975,15 @@ def stale_agent_warnings(payload: dict, agent: dict) -> list[str]:
     if threshold:
         last_seen = last_agent_activity_at(payload, agent)
         if not last_seen:
-            warnings.append(f"{status} without any timestamped heartbeat")
+            warnings.append(f"{plain_label(status, STATUS_LABELS)} has no time-stamped update")
         else:
             age_minutes = (datetime.now().astimezone() - last_seen).total_seconds() / 60
             if age_minutes > threshold:
-                warnings.append(f"{status} has no public update for {age_label(age_minutes)}")
+                warnings.append(f"{plain_label(status, STATUS_LABELS)} has not posted an update for {age_label(age_minutes)}")
     if status == "running" and not text_from_value(agent.get("id")):
-        warnings.append("running agent is missing its reconciled session id")
+        warnings.append("running agent is missing its session ID")
     if status in {"completed", "needs-review"} and not text_from_value(agent.get("lastFinalReportAt")):
-        warnings.append("review state has no ingested final report")
+        warnings.append("final report has not been added")
     return warnings
 
 
@@ -995,7 +998,7 @@ def dashboard_warnings(payload: dict, agents: list[dict]) -> list[str]:
         if agent_status(agent) == "reviewed":
             issues = review_gate_issues(agent)
             if issues:
-                warnings.append(f"{name}: reviewed but review evidence is incomplete ({'; '.join(issues)})")
+                warnings.append(f"{name}: marked reviewed but details are missing ({'; '.join(issues)})")
     return warnings
 
 
@@ -1030,11 +1033,11 @@ def set_command_state(payload: dict, command_id: str, state: str, note: str = ""
                 payload,
                 str(command.get("agent") or "Orchestrator"),
                 "status",
-                f"Command marked {normalized_state}",
+                f"Action marked {plain_label(normalized_state)}",
                 note or str(command.get("message") or command_id),
             )
             return True
-    add_event(payload, "Orchestrator", "blocked", "Command state update ignored", f"Unknown command id: {command_id}")
+    add_event(payload, "Orchestrator", "blocked", "Action update ignored", f"Unknown action id: {command_id}")
     return False
 
 
@@ -1089,23 +1092,24 @@ def render_doctor_report(payload: dict) -> str:
     workflow = summary["workflow"] if isinstance(summary.get("workflow"), dict) else {}
     worktree = summary["worktree"] if isinstance(summary.get("worktree"), dict) else {}
     lines = [
-        "# Agent Dashboard Doctor",
+        "# Dashboard Health Check",
         f"- Objective: {workflow.get('objective') or 'Not recorded'}",
         f"- Agents: {sum(counts.values())}",
-        f"- States: " + ", ".join(f"{state}={count}" for state, count in counts.items() if count),
+        f"- Status counts: " + ", ".join(f"{plain_label(state, STATUS_LABELS)}={count}" for state, count in counts.items() if count),
         f"- Warnings: {summary['warningCount']}",
-        f"- Pending commands: {len(summary['pendingCommands'])}",
-        f"- Stale pending commands: {len(summary['staleCommands'])}",
+        f"- Waiting actions: {len(summary['pendingCommands'])}",
+        f"- Old waiting actions: {len(summary['staleCommands'])}",
         f"- Estimated saved time: {format_minutes(int(impact.get('savedMinutes', 0)))} ({impact.get('rank')})",
     ]
     if worktree:
-        lines.append(f"- Worktree: {worktree.get('path') or 'not scanned'}; uncommitted={bool(worktree.get('uncommitted'))}")
+        changed = "yes" if worktree.get("uncommitted") else "no"
+        lines.append(f"- Work folder: {worktree.get('path') or 'not scanned'}; has uncommitted changes: {changed}")
 
-    lines.extend(["", "## Gaps"])
+    lines.extend(["", "## Missing Info"])
     gap_lines = [
-        ("Final reports missing", summary["finalReportGaps"]),
-        ("Write scopes missing", summary["writeScopeGaps"]),
-        ("Session ids missing", summary["missingIds"]),
+        ("Final reports needed", summary["finalReportGaps"]),
+        ("Edit paths needed", summary["writeScopeGaps"]),
+        ("Session IDs needed", summary["missingIds"]),
     ]
     for label, agents in gap_lines:
         if agents:
@@ -1123,31 +1127,31 @@ def render_doctor_report(payload: dict) -> str:
             lines.append(f"- ...{len(summary['warnings']) - 20} more")
 
     if summary["pendingCommands"]:
-        lines.extend(["", "## Pending Commands"])
+        lines.extend(["", "## Waiting Actions"])
         for command in summary["pendingCommands"][:12]:
             age = command_age_minutes(command)
             age_text = age_label(age) if age is not None else "unknown age"
-            lines.append(f"- {command.get('id')}: {command.get('agent')} / {command.get('kind')} / {age_text} / {command.get('message')}")
+            lines.append(f"- {command.get('id')}: {command.get('agent')} / {plain_label(command.get('kind'), KIND_LABELS)} / {age_text} / {command.get('message')}")
 
     if summary["blockers"]:
-        lines.extend(["", "## Critical Blockers"])
+        lines.extend(["", "## What Is Stuck"])
         for blocker, agents in list(summary["blockers"].items())[:12]:
             owner_text = ", ".join(agents[:4])
             extra = f" (+{len(agents) - 4} more)" if len(agents) > 4 else ""
             lines.append(f"- {owner_text}{extra}: {blocker}")
 
-    lines.extend(["", "## Suggested Next Actions"])
+    lines.extend(["", "## Suggested Next Steps"])
     if summary["finalReportGaps"]:
         first = summary["finalReportGaps"][0]
-        lines.append(f"- Generate a final-report template: --print-final-report-template \"{first.get('name') or first.get('id')}\"")
+        lines.append(f"- Make a final report template: --print-final-report-template \"{first.get('name') or first.get('id')}\"")
     if summary["writeScopeGaps"]:
         first = summary["writeScopeGaps"][0]
-        lines.append(f"- Add writeGlobs or mark readOnly=true for: {first.get('name') or first.get('id')}")
+        lines.append(f"- Add edit paths or mark readOnly=true for: {first.get('name') or first.get('id')}")
     if summary["staleCommands"]:
         first = summary["staleCommands"][0]
-        lines.append(f"- Resolve stale command: --set-command-state \"{first.get('id')}|dismissed|superseded or completed\"")
+        lines.append(f"- Clear old waiting action: --set-command-state \"{first.get('id')}|dismissed|superseded or completed\"")
     if not (summary["finalReportGaps"] or summary["writeScopeGaps"] or summary["staleCommands"]):
-        lines.append("- No hygiene actions needed; keep heartbeats and final reports current.")
+        lines.append("- Nothing needs fixing right now; keep updates and final reports current.")
     return "\n".join(lines).strip() + "\n"
 
 
@@ -1167,16 +1171,16 @@ def build_final_report_template(payload: dict, agent_ref_value: str) -> dict:
         "allowedFiles": agent.get("allowedFiles") if isinstance(agent.get("allowedFiles"), list) else [],
         "writeGlobs": agent.get("writeGlobs") if isinstance(agent.get("writeGlobs"), list) else [],
         "doNotTouch": agent.get("doNotTouch") if isinstance(agent.get("doNotTouch"), list) else [],
-        "expectedOutputs": agent.get("expectedOutputs") if isinstance(agent.get("expectedOutputs"), list) else ["changed files", "tests", "blockers", "handoff"],
+        "expectedOutputs": agent.get("expectedOutputs") if isinstance(agent.get("expectedOutputs"), list) else ["changed files", "tests", "blockers", "next step"],
         "tests": agent.get("tests") or "<verification run or reason tests were not run>",
         "blockers": agent.get("blockers") or "None reported",
-        "handoff": agent.get("handoff") or "<next owner/action>",
+        "handoff": agent.get("handoff") or "<next owner or action>",
         "events": [
             {
                 "agent": agent.get("name") or agent_ref_value or "AGENT_NAME",
                 "kind": "handoff",
                 "message": "Final report ready",
-                "detail": "Changed files, verification, blockers, and handoff provided.",
+                "detail": "Changed files, verification, blockers, and next step provided.",
             }
         ],
     }
@@ -1190,7 +1194,7 @@ def archive_run_snapshot(payload: dict, snapshot_dir: pathlib.Path = DEFAULT_SNA
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     payload.setdefault("snapshots", []).append({"path": str(path), "timestamp": utc_now()})
     payload["generatedAt"] = utc_now()
-    add_event(payload, "Orchestrator", "handoff", "Archived dashboard snapshot", str(path))
+    add_event(payload, "Orchestrator", "handoff", "Saved dashboard snapshot", str(path))
     return path
 
 
@@ -1205,9 +1209,9 @@ def promote_next_agents(payload: dict, note: str = "") -> int:
             break
         if agent_status(agent) in {"planned", "queued"}:
             set_agent_status(agent, "running", note)
-            add_event(payload, agent.get("name") or "agent", "status", "Promoted into running wave", note)
+            add_event(payload, agent.get("name") or "agent", "status", "Started next group", note)
             prompt = build_spawn_prompt(agent)
-            add_command(payload, agent.get("name") or "agent", "spawn", "Spawn this agent with the protocol prompt", prompt)
+            add_command(payload, agent.get("name") or "agent", "spawn", "Start this agent with the update plan", prompt)
             promoted += 1
     return promoted
 
@@ -1219,7 +1223,7 @@ def build_spawn_prompt(agent: dict) -> str:
         ownership=str(agent.get("ownership") or "specified in this prompt"),
         allowed_files="; ".join(agent.get("allowedFiles") if isinstance(agent.get("allowedFiles"), list) else []) or str(agent.get("ownership") or ""),
         do_not_touch="; ".join(agent.get("doNotTouch") if isinstance(agent.get("doNotTouch"), list) else []) or "anything outside your ownership scope",
-        expected_outputs="; ".join(agent.get("expectedOutputs") if isinstance(agent.get("expectedOutputs"), list) else []) or "changed files, verification, blockers, and handoff",
+        expected_outputs="; ".join(agent.get("expectedOutputs") if isinstance(agent.get("expectedOutputs"), list) else []) or "changed files, verification, blockers, and next step",
         heartbeat_cadence=str(agent.get("heartbeatCadence") or "on milestones"),
         test_expectations=str(agent.get("testExpectations") or agent.get("tests") or "run focused verification"),
     )
@@ -1237,12 +1241,12 @@ def handle_control_action(payload: dict, action: str, agent_key: str, note: str 
 
     if action == "promote-next":
         count = promote_next_agents(payload, note)
-        add_event(payload, "Orchestrator", "status", f"Promoted {count} queued agents", note)
+        add_event(payload, "Orchestrator", "status", f"Started {count} waiting agents", note)
         return
 
     if action == "export-memory":
         path = export_second_brain(payload, note)
-        add_event(payload, "Orchestrator", "handoff", "Exported run summary to second brain", str(path))
+        add_event(payload, "Orchestrator", "handoff", "Saved run summary to second brain", str(path))
         return
 
     if not agent:
@@ -1253,7 +1257,7 @@ def handle_control_action(payload: dict, action: str, agent_key: str, note: str 
         mark_agent_reviewed(payload, agent, note)
     elif action == "needs-review":
         set_agent_status(agent, "needs-review", note)
-        add_event(payload, agent_name, "review", "Marked needs review", note)
+        add_event(payload, agent_name, "review", "Marked needs more info", note)
     elif action == "mark-merged":
         set_agent_status(agent, "merged", note)
         add_event(payload, agent_name, "merged", "Marked merged", note)
@@ -1269,16 +1273,16 @@ def handle_control_action(payload: dict, action: str, agent_key: str, note: str 
         set_agent_status(agent, "failed", note)
         add_event(payload, agent_name, "failed", "Marked failed", note)
     elif action == "request-status":
-        prompt = "Please publish a public dashboard heartbeat: current status, changed files, tests, blockers, and next handoff. Do not include private reasoning."
-        add_command(payload, agent_name, "request-status", "Request a public status heartbeat", prompt)
+        prompt = "Please publish a public dashboard update: current status, changed files, tests, blockers, and next step. Do not include private reasoning."
+        add_command(payload, agent_name, "request-status", "Ask for a public status update", prompt)
         add_event(payload, agent_name, "status", "Status requested", note)
     elif action == "interrupt":
-        prompt = "Interrupt current work and publish a concise public status update plus any blockers or handoff needs. Do not include private reasoning."
-        add_command(payload, agent_name, "interrupt", "Interrupt agent for status or redirect", prompt)
-        add_event(payload, agent_name, "status", "Interrupt command queued for orchestrator", note)
+        prompt = "Pause current work and publish a short public status update plus any blockers or next-step needs. Do not include private reasoning."
+        add_command(payload, agent_name, "interrupt", "Pause agent for status or redirect", prompt)
+        add_event(payload, agent_name, "status", "Pause request queued", note)
     elif action == "queue-follow-up":
-        add_command(payload, agent_name, "follow-up", "Queue follow-up work", note or "Follow up on this agent handoff.")
-        add_event(payload, agent_name, "handoff", "Follow-up command queued", note)
+        add_command(payload, agent_name, "follow-up", "Add follow-up work", note or "Follow up on this agent's next step.")
+        add_event(payload, agent_name, "handoff", "Follow-up added", note)
     else:
         add_event(payload, agent_name, "status", f"Unknown action: {action}", note)
 
@@ -1405,7 +1409,7 @@ def scan_worktree(payload: dict, worktree: str, ignore_patterns: list[str] | Non
 
     payload["worktree"]["overlapRisk"] = overlaps
     payload["generatedAt"] = utc_now()
-    add_event(payload, "Orchestrator", "status", "Scanned worktree diff state", str(worktree_path))
+    add_event(payload, "Orchestrator", "status", "Checked file changes", str(worktree_path))
     return payload["worktree"]
 
 
@@ -1414,31 +1418,31 @@ def handoff_ready(agent: dict) -> str:
     if status in BLOCKED_STATES:
         return "blocked"
     if status in {"reviewed", "merged", "closed"}:
-        return "reviewed"
+        return "checked"
     if status in REVIEW_READY_STATES:
         if not review_gate_issues(agent):
-            return "ready-for-review"
-        return "needs-evidence"
-    return "not-ready"
+            return "ready to check"
+        return "needs missing details"
+    return "not ready yet"
 
 
 def protocol_issues(agent: dict) -> list[str]:
     issues: list[str] = []
     read_only = agent_is_read_only(agent)
     if not str(agent.get("ownership") or "").strip():
-        issues.append("missing ownership scope")
+        issues.append("work area is missing")
     if not agent.get("allowedFiles"):
-        issues.append("missing allowed files/modules")
+        issues.append("allowed files are missing")
     if not read_only and not agent.get("writeGlobs"):
-        issues.append("missing write globs")
+        issues.append("allowed edit paths are missing")
     if not agent.get("expectedOutputs"):
-        issues.append("missing expected outputs")
+        issues.append("expected results are missing")
     if not str(agent.get("heartbeatCadence") or "").strip():
-        issues.append("missing heartbeat cadence")
+        issues.append("update timing is missing")
     if not str(agent.get("testExpectations") or agent.get("tests") or "").strip():
-        issues.append("missing test expectations")
+        issues.append("test plan is missing")
     if not read_only and not agent.get("doNotTouch"):
-        issues.append("missing do-not-touch scope")
+        issues.append("off-limits files are missing")
     return issues
 
 
@@ -1449,7 +1453,7 @@ def protocol_state(agent: dict) -> str:
 def render_protocol_summary(agent: dict) -> str:
     issues = protocol_issues(agent)
     if not issues:
-        return '<p class="ok-text">Protocol complete</p>'
+        return '<p class="ok-text">Update plan complete</p>'
     return render_list(issues)
 
 
@@ -1457,26 +1461,26 @@ def render_memory_summary(payload: dict) -> str:
     agents = payload.get("agents", [])
     impact = compute_impact(payload, agents, count_agents(agents))
     lines = [
-        "## Codex agent control-plane run",
+        "## Codex agent dashboard run",
         f"- Exported: {compact_time(utc_now())}",
         f"- Dashboard: http://127.0.0.1:8765/agent-dashboard.html",
         f"- Objective: {payload.get('workflow', {}).get('objective') or 'Not recorded'}",
         f"- Agents launched: {len(agents)}",
         f"- Estimated time saved: {format_minutes(int(impact.get('savedMinutes', 0)))}",
-        f"- Impact rank: {impact.get('rank')}",
+        f"- Saved time level: {impact.get('rank')}",
         "",
-        "### Agent states",
+        "### Agent status",
     ]
     for state in LIFECYCLE_STATES:
         count = len([agent for agent in agents if agent_status(agent) == state])
         if count:
-            lines.append(f"- {state}: {count}")
+            lines.append(f"- {plain_label(state, STATUS_LABELS)}: {count}")
     decision_events = [event for event in payload.get("events", []) if str(event.get("kind") or "").lower() in {"decision", "reviewed", "merged"}]
     if decision_events:
         lines.extend(["", "### Decisions made"])
         for event in decision_events[-12:]:
             lines.append(f"- {event.get('message')} ({event.get('agent')})")
-    lines.extend(["", "### Agent handoffs"])
+    lines.extend(["", "### Agent next steps"])
     artifact_lines: list[str] = []
     lesson_lines: list[str] = []
     for agent in agents:
@@ -1493,8 +1497,8 @@ def render_memory_summary(payload: dict) -> str:
             lines.append(f"  - Blockers: {agent.get('blockers')}")
             lesson_lines.append(f"- {agent.get('name')}: blocker - {agent.get('blockers')}")
         if agent.get("handoff"):
-            lines.append(f"  - Handoff: {agent.get('handoff')}")
-            lesson_lines.append(f"- {agent.get('name')}: handoff - {agent.get('handoff')}")
+            lines.append(f"  - Next step: {agent.get('handoff')}")
+            lesson_lines.append(f"- {agent.get('name')}: next step - {agent.get('handoff')}")
     if artifact_lines:
         lines.extend(["", "### Artifacts and files", *artifact_lines])
     if lesson_lines:
@@ -1597,6 +1601,28 @@ def agent_status(agent: dict) -> str:
     return str(agent.get("status") or "running").lower()
 
 
+STATUS_LABELS = {
+    "needs-review": "needs review",
+}
+
+KIND_LABELS = {
+    "handoff": "next step",
+    "request-evidence": "more info",
+    "request-status": "status update",
+    "close-agent": "close agent",
+}
+
+
+def plain_label(value: object, labels: dict[str, str] | None = None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    normalized = text.lower()
+    if labels and normalized in labels:
+        return labels[normalized]
+    return normalized.replace("_", " ").replace("-", " ")
+
+
 def view_class(view: str, current: str) -> str:
     if current == "agent" and view == "agents":
         return "active"
@@ -1622,7 +1648,7 @@ def agent_warning_items(payload: dict, agent: dict) -> list[str]:
     if agent_status(agent) == "reviewed":
         issues = review_gate_issues(agent)
         if issues:
-            warnings.append(f"review evidence incomplete: {'; '.join(issues)}")
+            warnings.append(f"review details missing: {'; '.join(issues)}")
     return warnings
 
 
@@ -1632,7 +1658,7 @@ def render_agent_warnings(payload: dict, agent: dict) -> str:
         return ""
     return f"""
       <div class="agent-warning">
-        <label>Warnings</label>
+        <label>Needs attention</label>
         {render_warning_list(warnings)}
       </div>
     """
@@ -1645,6 +1671,7 @@ def render_agent_nav(agents: list[dict]) -> str:
     for index, agent in enumerate(agents):
         name = esc(agent.get("name"))
         status = str(agent.get("status") or "running")
+        status_label = esc(plain_label(status, STATUS_LABELS))
         summary = esc(agent.get("summary") or agent.get("ownership") or status)
         rows.append(
             f"""
@@ -1654,7 +1681,7 @@ def render_agent_nav(agents: list[dict]) -> str:
                 <strong>{name}</strong>
                 <em>{summary}</em>
               </span>
-              <span class="nav-state">{esc(status)}</span>
+              <span class="nav-state">{status_label}</span>
             </a>
             """
         )
@@ -1686,7 +1713,7 @@ def render_events(payload: dict, agents: list[dict]) -> str:
               <div class="event-meta">
                 <span>{esc(compact_time(event.get("timestamp")))}</span>
                 <span>{esc(event.get("agent"))}</span>
-                <b>{esc(event.get("kind"))}</b>
+                <b>{esc(plain_label(event.get("kind"), KIND_LABELS))}</b>
               </div>
               <div class="event-message">{esc(event.get("message"))}</div>
               <div class="event-detail">{esc(event.get("detail"))}</div>
@@ -1714,7 +1741,7 @@ def render_agent_activity(payload: dict, agent: dict) -> str:
     raw_events = payload.get("events") if isinstance(payload.get("events"), list) else []
     events = [event for event in raw_events if isinstance(event, dict) and event_matches_agent(event, agent)]
     if not events:
-        return '<div class="mini-empty">No heartbeat activity yet</div>'
+        return '<div class="mini-empty">No updates yet</div>'
     rows = []
     for event in reversed(events[-5:]):
         rows.append(
@@ -1722,7 +1749,7 @@ def render_agent_activity(payload: dict, agent: dict) -> str:
             <div class="mini-event">
               <div class="mini-meta">
                 <span>{esc(compact_time(event.get("timestamp")))}</span>
-                <b>{esc(event.get("kind"))}</b>
+                <b>{esc(plain_label(event.get("kind"), KIND_LABELS))}</b>
               </div>
               <div class="mini-message">{esc(event.get("message"))}</div>
               <div class="mini-detail">{esc(event.get("detail"))}</div>
@@ -1739,6 +1766,7 @@ def render_agent_rows(payload: dict, agents: list[dict]) -> str:
     rows = []
     for index, agent in enumerate(agents):
         status = str(agent.get("status") or "running")
+        status_label = esc(plain_label(status, STATUS_LABELS))
         rows.append(
             f"""
             <article id="agent-{index}" class="agent-row {status_class(status)}">
@@ -1747,21 +1775,21 @@ def render_agent_rows(payload: dict, agents: list[dict]) -> str:
                   <h3>{esc(agent.get("name"))}</h3>
                   <p class="mono">{esc(agent.get("id")) or "no agent id"}</p>
                 </div>
-                <span class="status">{esc(status)}</span>
+                <span class="status">{status_label}</span>
               </div>
               <p class="summary">{esc(agent.get("summary")) or '<span class="muted">No public summary yet</span>'}</p>
               {render_agent_warnings(payload, agent)}
               <div class="detail-grid">
                 <section>
-                  <label>Ownership</label>
+                  <label>Work area</label>
                   <p>{esc(agent.get("ownership")) or '<span class="muted">Unspecified</span>'}</p>
                 </section>
                 <section>
-                  <label>Write globs</label>
+                  <label>Allowed edit paths</label>
                   {render_list(agent.get("writeGlobs") if isinstance(agent.get("writeGlobs"), list) else [])}
                 </section>
                 <section>
-                  <label>Protocol</label>
+                  <label>Update plan</label>
                   {render_protocol_summary(agent)}
                 </section>
                 <section>
@@ -1773,16 +1801,16 @@ def render_agent_rows(payload: dict, agents: list[dict]) -> str:
                   <p>{esc(agent.get("tests")) or '<span class="muted">None reported</span>'}</p>
                 </section>
                 <section>
-                  <label>Blockers</label>
+                  <label>Stuck on</label>
                   <p>{esc(agent.get("blockers")) or '<span class="muted">None reported</span>'}</p>
                 </section>
               </div>
               <div class="handoff">
-                <label>Next handoff</label>
+                <label>Next step</label>
                 <p>{esc(agent.get("handoff")) or '<span class="muted">None yet</span>'}</p>
               </div>
               <div class="activity">
-                <label>Recent heartbeat</label>
+                <label>Recent update</label>
                 {render_agent_activity(payload, agent)}
               </div>
             </article>
@@ -1794,15 +1822,15 @@ def render_agent_rows(payload: dict, agents: list[dict]) -> str:
 def render_view_tabs(current: str) -> str:
     tabs = [
         ("overview", "Overview", "/overview"),
-        ("workflow", "Workflow", "/workflow"),
+        ("workflow", "Work Plan", "/workflow"),
         ("agents", "Agents", "/agents"),
-        ("review", "Review", "/review"),
-        ("diffs", "Diffs", "/diffs"),
-        ("doctor", "Doctor", "/doctor"),
+        ("review", "Check Work", "/review"),
+        ("diffs", "File Changes", "/diffs"),
+        ("doctor", "Health", "/doctor"),
         ("activity", "Activity", "/activity"),
-        ("queue", "Queue", "/queue"),
-        ("recipes", "Recipes", "/recipes"),
-        ("memory", "Memory", "/memory"),
+        ("queue", "Waiting", "/queue"),
+        ("recipes", "Templates", "/recipes"),
+        ("memory", "Notes", "/memory"),
     ]
     return '<nav class="view-tabs">' + "".join(
         f'<a class="{view_class(view, current)}" href="{href}">{label}</a>'
@@ -1816,20 +1844,44 @@ def impact_config(payload: dict) -> dict:
         "manualMinutesPerAgent": max(1, positive_int(config.get("manualMinutesPerAgent"), DEFAULT_MANUAL_MINUTES_PER_AGENT)),
         "coordinationMinutesPerAgent": positive_int(config.get("coordinationMinutesPerAgent"), DEFAULT_COORDINATION_MINUTES_PER_AGENT),
         "focusBlockMinutes": max(1, positive_int(config.get("focusBlockMinutes"), DEFAULT_FOCUS_BLOCK_MINUTES)),
-        "note": text_from_value(config.get("note")) or "Estimated from agent work slices, progress state, and orchestration overhead.",
+        "note": text_from_value(config.get("note")) or "Estimated from agent work items, status, and time spent coordinating.",
     }
 
 
 def impact_rank(saved_minutes: int) -> str:
     if saved_minutes >= 600:
-        return "Mission Director"
+        return "huge time save"
     if saved_minutes >= 300:
-        return "Flow Captain"
+        return "large time save"
     if saved_minutes >= 120:
-        return "Scale Builder"
+        return "solid time save"
     if saved_minutes >= 30:
-        return "Momentum Maker"
-    return "Warming Up"
+        return "good start"
+    return "just started"
+
+
+def meaningful_changed_files(agent: dict) -> list[str]:
+    empty_markers = {"", "none", "n/a", "na", "no edits", "no changes", "read-only", "readonly"}
+    return [
+        item for item in list_from_value(agent.get("changedFiles"))
+        if item.strip().lower() not in empty_markers
+    ]
+
+
+def default_manual_effort_weight(agent: dict) -> float:
+    text = " ".join([
+        text_from_value(agent.get("name")),
+        text_from_value(agent.get("summary")),
+        text_from_value(agent.get("ownership")),
+    ]).lower()
+    weights = [1.0]
+    if bool_from_value(agent.get("readOnly")) or any(token in text for token in ("scout", "read-only", "readonly", "qa scan")):
+        weights.append(IMPACT_READ_ONLY_WEIGHT)
+    if "orchestrator" in text:
+        weights.append(IMPACT_META_WORK_WEIGHT)
+    if not meaningful_changed_files(agent):
+        weights.append(IMPACT_NO_EDIT_WEIGHT)
+    return min(weights)
 
 
 def format_minutes(minutes: int) -> str:
@@ -1853,13 +1905,16 @@ def compute_impact(payload: dict, agents: list[dict], counts: dict[str, int]) ->
     for agent in agents:
         status = agent_status(agent)
         progress = IMPACT_PROGRESS_WEIGHTS.get(status, 0.5)
+        manual_is_explicit = bool(agent.get("manualMinutes"))
+        coordination_is_explicit = bool(agent.get("coordinationMinutes"))
         manual_minutes = positive_int(agent.get("manualMinutes"), config["manualMinutesPerAgent"])
         coordination_minutes = positive_int(agent.get("coordinationMinutes"), config["coordinationMinutesPerAgent"])
-        if agent.get("manualMinutes") or agent.get("coordinationMinutes"):
+        if manual_is_explicit or coordination_is_explicit:
             explicit_estimates += 1
-        manual_total += manual_minutes * progress
+        manual_weight = progress if manual_is_explicit else progress * default_manual_effort_weight(agent)
+        manual_total += manual_minutes * manual_weight
         coordination_total += coordination_minutes * progress
-        effective_slices += progress
+        effective_slices += manual_minutes * manual_weight / config["manualMinutesPerAgent"]
 
     manual_minutes_total = int(round(manual_total))
     coordination_minutes_total = int(round(coordination_total))
@@ -1877,17 +1932,17 @@ def compute_impact(payload: dict, agents: list[dict], counts: dict[str, int]) ->
 
     badges: list[dict[str, str]] = []
     if agents:
-        badges.append({"title": "Impact Started", "detail": f"{len(agents)} slices tracked"})
+        badges.append({"title": "Tracking Started", "detail": f"{len(agents)} work items tracked"})
     if running >= 2:
-        badges.append({"title": "Parallel Lift", "detail": f"{running} agents in motion"})
+        badges.append({"title": "Several Agents Working", "detail": f"{running} agents active"})
     if clean_review_ready:
-        badges.append({"title": "Evidence Streak", "detail": f"{clean_review_ready} clean handoffs"})
+        badges.append({"title": "Clear Updates", "detail": f"{clean_review_ready} agents ready to check"})
     if done_count:
-        badges.append({"title": "Review Closer", "detail": f"{done_count} slices done"})
+        badges.append({"title": "Work Checked", "detail": f"{done_count} work items done"})
     if agents and not warnings:
-        badges.append({"title": "Low Drift", "detail": "No active dashboard warnings"})
+        badges.append({"title": "Looks Clear", "detail": "No dashboard warnings"})
     if saved_minutes >= 120:
-        badges.append({"title": "Deep Work Banked", "detail": f"{focus_blocks} focus blocks recovered"})
+        badges.append({"title": "Focus Time Saved", "detail": f"{focus_blocks} focus blocks saved"})
 
     return {
         "manualMinutes": manual_minutes_total,
@@ -1899,8 +1954,8 @@ def compute_impact(payload: dict, agents: list[dict], counts: dict[str, int]) ->
         "rank": impact_rank(saved_minutes),
         "badges": badges[:6],
         "assumption": (
-            f"{config['manualMinutesPerAgent']}m manual baseline minus "
-            f"{config['coordinationMinutesPerAgent']}m coordination per full agent slice"
+            f"{config['manualMinutesPerAgent']}m baseline lowered for read-only, lead, or no-edit work; "
+            f"minus {config['coordinationMinutesPerAgent']}m coordination per tracked item"
         ),
         "note": config["note"],
         "explicitEstimates": explicit_estimates,
@@ -1914,7 +1969,7 @@ def render_stats(counts: dict[str, int], impact: dict | None = None) -> str:
       <section class="stats">
         <div class="stat"><span>Planned</span><strong>{counts.get("planned", 0)}</strong></div>
         <div class="stat run"><span>Running</span><strong>{counts["running"]}</strong></div>
-        <div class="stat warn"><span>Review</span><strong>{counts.get("needs-review", 0) + counts.get("completed", 0)}</strong></div>
+        <div class="stat warn"><span>To Check</span><strong>{counts.get("needs-review", 0) + counts.get("completed", 0)}</strong></div>
         <div class="stat bad"><span>Blocked</span><strong>{counts["blocked"]}</strong></div>
         <div class="stat ok"><span>Done</span><strong>{counts.get("reviewed", 0) + counts.get("merged", 0) + counts.get("closed", 0)}</strong></div>
         <div class="stat impact"><span>Saved</span><strong>{esc(saved)}</strong></div>
@@ -1941,7 +1996,7 @@ def render_impact_panel(impact: dict) -> str:
         </div>
         """
         for badge in badges if isinstance(badge, dict)
-    ) or '<span class="muted">Start tracking agents to unlock impact badges.</span>'
+    ) or '<span class="muted">Start tracking agents to see progress badges.</span>'
     body = f"""
       <div class="impact-grid">
         <section class="impact-hero">
@@ -1950,26 +2005,26 @@ def render_impact_panel(impact: dict) -> str:
           <p>{esc(impact.get("rank"))} - {esc(impact.get("assumption"))}</p>
         </section>
         <section>
-          <label>Manual effort avoided</label>
+          <label>Manual work avoided</label>
           <p>{esc(format_minutes(int(impact.get("manualMinutes", 0))))}</p>
         </section>
         <section>
-          <label>Coordination cost</label>
+          <label>Time coordinating</label>
           <p>{esc(format_minutes(int(impact.get("coordinationMinutes", 0))))}</p>
         </section>
         <section>
-          <label>Focus blocks recovered</label>
+          <label>Focus blocks saved</label>
           <p>{esc(impact.get("focusBlocks", 0))} x {esc(impact.get("focusBlockMinutes", DEFAULT_FOCUS_BLOCK_MINUTES))}m</p>
         </section>
         <section>
-          <label>Effective work slices</label>
+          <label>Work counted</label>
           <p>{esc(impact.get("effectiveSlices", 0))}</p>
         </section>
       </div>
       <div class="impact-badges">{badge_markup}</div>
       <p class="impact-note">{esc(impact.get("note"))}</p>
     """
-    return render_panel("Impact Scoreboard", "estimated by dashboard", body)
+    return render_panel("Time Saved Estimate", "rough estimate", body)
 
 
 def filter_agents(agents: list[dict], statuses: set[str]) -> list[dict]:
@@ -2010,6 +2065,7 @@ def render_agent_table(agents: list[dict]) -> str:
     rows = []
     for agent in agents:
         status = agent_status(agent)
+        status_label = esc(plain_label(status, STATUS_LABELS))
         rows.append(
             f"""
             <a class="agent-line {status_class(status)}" href="{agent_href(agent)}">
@@ -2018,7 +2074,7 @@ def render_agent_table(agents: list[dict]) -> str:
                 <strong>{esc(agent.get("name"))}</strong>
                 <em>{esc(agent.get("summary")) or "No summary yet"}</em>
               </span>
-              <b>{esc(status)}</b>
+              <b>{status_label}</b>
             </a>
             """
         )
@@ -2034,19 +2090,19 @@ def render_overview(payload: dict, agents: list[dict], counts: dict[str, int]) -
     return (
         render_stats(counts, impact)
         + render_impact_panel(impact)
-        + (render_panel("Stale / Drift Warnings", f"{len(warnings)} warnings", render_warning_list(warnings)) if warnings else "")
-        + render_panel("Active Agents", f"{len(active_agents)} in motion", render_agent_table(active_agents))
+        + (render_panel("Needs Attention", f"{len(warnings)} warnings", render_warning_list(warnings)) if warnings else "")
+        + render_panel("Active Agents", f"{len(active_agents)} active or waiting", render_agent_table(active_agents))
         + (render_panel("Blocked", f"{len(blocked_agents)} need attention", render_agent_table(blocked_agents)) if blocked_agents else "")
         + render_panel("Recent Activity", "newest first", recent)
     )
 
 
 def render_agents_view(payload: dict, agents: list[dict]) -> str:
-    return render_panel("Agent Directory", f"{len(agents)} total", render_agent_rows(payload, agents))
+    return render_panel("All Agents", f"{len(agents)} total", render_agent_rows(payload, agents))
 
 
 def render_activity_view(payload: dict, agents: list[dict]) -> str:
-    return render_panel("Activity Timeline", "latest public heartbeat events", render_events(payload, agents))
+    return render_panel("Recent Updates", "latest public updates", render_events(payload, agents))
 
 
 def render_queue_view(agents: list[dict]) -> str:
@@ -2055,9 +2111,9 @@ def render_queue_view(agents: list[dict]) -> str:
     completed = filter_agents(agents, {"completed", "merged"})
     body = (
         '<div class="queue-grid">'
-        + render_panel("Queued / Review", f"{len(queued)} waiting", render_agent_table(queued))
-        + render_panel("Running Slots", f"{len(running)} open sessions", render_agent_table(running))
-        + render_panel("Closable Completed", f"{len(completed)} finished", render_agent_table(completed))
+        + render_panel("Waiting Or Ready To Check", f"{len(queued)} waiting", render_agent_table(queued))
+        + render_panel("Running Now", f"{len(running)} active", render_agent_table(running))
+        + render_panel("Done And Ready To Close", f"{len(completed)} finished", render_agent_table(completed))
         + "</div>"
     )
     return body
@@ -2095,7 +2151,7 @@ def render_copy_button(label: str, value: str) -> str:
 def render_pending_commands(payload: dict) -> str:
     commands = [command for command in payload.get("commands", []) if isinstance(command, dict) and command.get("state") == "pending"]
     if not commands:
-        return '<section class="empty">No pending orchestrator commands.</section>'
+        return '<section class="empty">No waiting actions.</section>'
     rows = []
     for command in reversed(commands[-20:]):
         prompt = str(command.get("prompt") or command.get("message") or "")
@@ -2104,7 +2160,7 @@ def render_pending_commands(payload: dict) -> str:
             <div class="command-row">
               <div>
                 <strong>{esc(command.get("message"))}</strong>
-                <p>{esc(command.get("agent"))} &middot; {esc(command.get("kind"))} &middot; {esc(compact_time(command.get("createdAt")))}</p>
+                <p>{esc(command.get("agent"))} &middot; {esc(plain_label(command.get("kind"), KIND_LABELS))} &middot; {esc(compact_time(command.get("createdAt")))}</p>
               </div>
               <div class="action-bar">
                 {render_copy_button("Copy", prompt)}
@@ -2130,29 +2186,29 @@ def render_workflow_view(payload: dict, agents: list[dict], counts: dict[str, in
           <p>{esc(workflow.get("objective")) or '<span class="muted">Not recorded</span>'}</p>
         </section>
         <section>
-          <label>Concurrency</label>
+          <label>Agent limit</label>
           <p>{running} running / {esc(limit)} limit &middot; {capacity} slots open</p>
         </section>
         <section>
-          <label>Worktree</label>
+          <label>Work folder</label>
           <p>{esc(workflow.get("worktree")) or '<span class="muted">Not scanned</span>'}</p>
         </section>
         <section>
-          <label>Active wave</label>
+          <label>Current group</label>
           <p>{esc(workflow.get("activeWave")) or '<span class="muted">Unspecified</span>'}</p>
         </section>
       </div>
       <div class="action-bar">
-        {render_action_form("promote-next", "Promote next wave")}
-        {render_action_form("export-memory", "Export memory")}
+        {render_action_form("promote-next", "Start next group")}
+        {render_action_form("export-memory", "Save summary to notes")}
       </div>
     """
     return (
         render_stats(counts, impact)
         + render_impact_panel(impact)
-        + (render_panel("Stale / Drift Warnings", f"{len(warnings)} warnings", render_warning_list(warnings)) if warnings else "")
-        + render_panel("Workflow Runner", "wave scheduler and orchestration state", body)
-        + render_panel("Pending Commands", "copy into Codex tool actions", render_pending_commands(payload))
+        + (render_panel("Needs Attention", f"{len(warnings)} warnings", render_warning_list(warnings)) if warnings else "")
+        + render_panel("Work Plan", "who runs next", body)
+        + render_panel("Waiting Actions", "copy into agent chats", render_pending_commands(payload))
     )
 
 
@@ -2169,18 +2225,18 @@ def render_review_view(payload: dict, agents: list[dict]) -> str:
                 <strong>{esc(agent.get("name"))}</strong>
                 <p>{esc(agent.get("summary")) or "No summary yet"}</p>
                 <p class="muted">{esc(agent.get("tests")) or "No tests reported"} &middot; {esc(agent.get("blockers")) or "No blockers reported"}</p>
-                {(f'<div class="gate-issues">{render_warning_list(gate_issues)}</div>' if gate_issues else '<p class="ok-text">Review evidence complete</p>')}
+                {(f'<div class="gate-issues">{render_warning_list(gate_issues)}</div>' if gate_issues else '<p class="ok-text">Ready to check</p>')}
               </div>
               <div class="row-actions">
-                {render_action_form("mark-reviewed", "Mark reviewed", agent)}
-                {render_action_form("needs-review", "Needs review", agent)}
+                {render_action_form("mark-reviewed", "Mark checked", agent)}
+                {render_action_form("needs-review", "Needs more info", agent)}
                 {render_action_form("close", "Close", agent)}
               </div>
             </div>
             """
         )
-    pending = "".join(rows) if rows else '<section class="empty">No completed agents are waiting for review.</section>'
-    return render_panel("Review Gate", f"{len(needs_review)} pending review", pending) + render_panel("Reviewed / Closed", f"{len(reviewed)} past gate", render_agent_table(reviewed))
+    pending = "".join(rows) if rows else '<section class="empty">No completed agents are waiting to be checked.</section>'
+    return render_panel("Ready To Check", f"{len(needs_review)} waiting", pending) + render_panel("Checked Or Closed", f"{len(reviewed)} checked", render_agent_table(reviewed))
 
 
 def render_diffs_view(payload: dict, agents: list[dict]) -> str:
@@ -2199,13 +2255,13 @@ def render_diffs_view(payload: dict, agents: list[dict]) -> str:
                 {render_warning_list(warnings) if warnings else ""}
               </div>
               <div>
-                <label>Matched files</label>
+                <label>Files this agent changed</label>
                 {render_list(info.get("matchedChangedFiles") if isinstance(info.get("matchedChangedFiles"), list) else [])}
               </div>
               <div>
-                <label>Ownership violations</label>
+                <label>Files outside work area</label>
                 {render_list(info.get("ownershipViolations") if isinstance(info.get("ownershipViolations"), list) else [])}
-                <label>Overlap risk</label>
+                <label>May conflict with</label>
                 {render_list(list(overlap_risk.keys()))}
               </div>
             </div>
@@ -2213,35 +2269,35 @@ def render_diffs_view(payload: dict, agents: list[dict]) -> str:
         )
     changed_count = len(worktree.get('changedFiles', [])) if isinstance(worktree.get('changedFiles'), list) else 0
     ignored_count = len(worktree.get('ignoredFiles', [])) if isinstance(worktree.get('ignoredFiles'), list) else 0
-    head = f"Worktree: {worktree.get('path') or 'not scanned'} - {changed_count} changed files, {ignored_count} ignored"
-    return render_panel("Worktree Intelligence", head, "".join(rows) if rows else '<section class="empty">No agent diff data yet.</section>')
+    head = f"Work folder: {worktree.get('path') or 'not scanned'} - {changed_count} changed files, {ignored_count} ignored"
+    return render_panel("File Change Check", head, "".join(rows) if rows else '<section class="empty">No file-change data yet.</section>')
 
 
 def render_agent_diff_summary(agent: dict) -> str:
     info = agent.get("worktree") if isinstance(agent.get("worktree"), dict) else {}
     if not info:
-        return '<div class="mini-empty">No worktree scan recorded yet.</div>'
+        return '<div class="mini-empty">No file-change check yet.</div>'
     overlap_risk = info.get("overlapRisk") if isinstance(info.get("overlapRisk"), dict) else {}
     return f"""
       <div class="detail-grid">
         <section>
-          <label>Handoff readiness</label>
+          <label>Ready for next step</label>
           <p>{esc(info.get("handoffReady") or handoff_ready(agent))}</p>
         </section>
         <section>
-          <label>Diff summary</label>
-          <p>{esc(info.get("diffSummary")) or '<span class="muted">No diff summary</span>'}</p>
+          <label>Change summary</label>
+          <p>{esc(info.get("diffSummary")) or '<span class="muted">No change summary</span>'}</p>
         </section>
         <section>
-          <label>Matched changed files</label>
+          <label>Files this agent changed</label>
           {render_list(info.get("matchedChangedFiles") if isinstance(info.get("matchedChangedFiles"), list) else [])}
         </section>
         <section>
-          <label>Ownership violations</label>
+          <label>Files outside work area</label>
           {render_list(info.get("ownershipViolations") if isinstance(info.get("ownershipViolations"), list) else [])}
         </section>
         <section>
-          <label>Overlap risk</label>
+          <label>May conflict with</label>
           {render_list(list(overlap_risk.keys()))}
         </section>
       </div>
@@ -2260,30 +2316,30 @@ def render_recipes_view(payload: dict) -> str:
               <div>
                 <strong>{esc(recipe.get("title"))}</strong>
                 <p>{esc(recipe.get("purpose"))}</p>
-                <p class="muted">{esc(key)} &middot; {esc(recipe.get("agentType"))}</p>
+                <p class="muted">{esc(key)} &middot; {esc(plain_label(recipe.get("agentType")))}</p>
               </div>
-              {render_copy_button("Copy recipe prompt", prompt)}
+              {render_copy_button("Copy template prompt", prompt)}
             </div>
             """
         )
-    return render_panel("Deployment Recipes", f"{len(rows)} recipes", "".join(rows))
+    return render_panel("Agent Templates", f"{len(rows)} templates", "".join(rows))
 
 
 def render_memory_view(payload: dict) -> str:
     exports = payload.get("memoryExports") if isinstance(payload.get("memoryExports"), list) else []
     body = f"""
       <section class="memory-preview">
-        <label>Second-brain summary preview</label>
+        <label>Notes preview</label>
         <pre>{esc(render_memory_summary(payload))}</pre>
       </section>
-      <div class="action-bar">{render_action_form("export-memory", "Append to daily note")}</div>
+      <div class="action-bar">{render_action_form("export-memory", "Add to daily note")}</div>
     """
     if exports:
         body += "<div class=\"memory-exports\">" + "".join(
             f"<p>{esc(compact_time(item.get('timestamp')))} &middot; <code>{esc(item.get('path'))}</code></p>"
             for item in exports[-5:] if isinstance(item, dict)
         ) + "</div>"
-    return render_panel("Second Brain", "durable run summary", body)
+    return render_panel("Second Brain Notes", "saved run summary", body)
 
 
 def render_doctor_view(payload: dict) -> str:
@@ -2294,7 +2350,7 @@ def render_doctor_view(payload: dict) -> str:
         + len(summary["missingIds"])
         + len(summary["staleCommands"])
     )
-    return render_panel("Dashboard Doctor", f"{gap_count} hygiene gaps", f"<pre>{esc(render_doctor_report(payload))}</pre>")
+    return render_panel("Dashboard Health Check", f"{gap_count} items to fix", f"<pre>{esc(render_doctor_report(payload))}</pre>")
 
 
 def render_agent_detail(payload: dict, agents: list[dict], agent_ref_value: str) -> str:
@@ -2302,29 +2358,30 @@ def render_agent_detail(payload: dict, agents: list[dict], agent_ref_value: str)
     if not agent:
         return render_panel("Agent Not Found", "unknown route", '<section class="empty">That agent is not in the current dashboard state.</section>')
     status = agent_status(agent)
+    status_label = esc(plain_label(status, STATUS_LABELS))
     return f"""
       <section class="agent-detail {status_class(status)}">
         <div class="detail-hero">
           <div>
-            <p class="eyebrow">Agent Detail</p>
+            <p class="eyebrow">Agent Details</p>
             <h3>{esc(agent.get("name"))}</h3>
             <p class="mono">{esc(agent.get("id")) or "no agent id"}</p>
           </div>
-          <span class="status">{esc(status)}</span>
+          <span class="status">{status_label}</span>
         </div>
         <p class="summary">{esc(agent.get("summary")) or '<span class="muted">No public summary yet</span>'}</p>
         {render_agent_warnings(payload, agent)}
         <div class="detail-grid">
           <section>
-            <label>Ownership</label>
+            <label>Work area</label>
             <p>{esc(agent.get("ownership")) or '<span class="muted">Unspecified</span>'}</p>
           </section>
           <section>
-            <label>Write globs</label>
+            <label>Allowed edit paths</label>
             {render_list(agent.get("writeGlobs") if isinstance(agent.get("writeGlobs"), list) else [])}
           </section>
           <section>
-            <label>Protocol</label>
+            <label>Update plan</label>
             {render_protocol_summary(agent)}
           </section>
           <section>
@@ -2336,30 +2393,30 @@ def render_agent_detail(payload: dict, agents: list[dict], agent_ref_value: str)
             <p>{esc(agent.get("tests")) or '<span class="muted">None reported</span>'}</p>
           </section>
           <section>
-            <label>Blockers</label>
+            <label>Stuck on</label>
             <p>{esc(agent.get("blockers")) or '<span class="muted">None reported</span>'}</p>
           </section>
         </div>
         <div class="handoff">
-          <label>Next handoff</label>
+          <label>Next step</label>
           <p>{esc(agent.get("handoff")) or '<span class="muted">None yet</span>'}</p>
         </div>
         <div class="activity">
-          <label>Control actions</label>
+          <label>Actions</label>
           <div class="action-bar">
-            {render_action_form("request-status", "Request status", agent)}
-            {render_action_form("interrupt", "Interrupt", agent)}
-            {render_action_form("queue-follow-up", "Queue follow-up", agent, "Follow up on this handoff.")}
-            {render_action_form("mark-reviewed", "Mark reviewed", agent)}
+            {render_action_form("request-status", "Ask for update", agent)}
+            {render_action_form("interrupt", "Pause and ask", agent)}
+            {render_action_form("queue-follow-up", "Add follow-up", agent, "Follow up on this agent's next step.")}
+            {render_action_form("mark-reviewed", "Mark checked", agent)}
             {render_action_form("close", "Close", agent)}
           </div>
         </div>
         <div class="activity">
-          <label>Worktree intelligence</label>
+          <label>File change check</label>
           {render_agent_diff_summary(agent)}
         </div>
         <div class="activity">
-          <label>Recent heartbeat</label>
+          <label>Recent update</label>
           {render_agent_activity(payload, agent)}
         </div>
       </section>
@@ -3093,7 +3150,7 @@ def render_html(payload: dict, view: str = "overview", agent_ref: str = "") -> s
       <header>
         <div class="title-row">
           <div>
-            <p class="eyebrow">Agent Mission Control</p>
+            <p class="eyebrow">Agent Dashboard</p>
             <h2>{esc(payload.get("title"))}</h2>
             <p class="sub">Updated {esc(generated_at)} &middot; refreshes every 5 seconds</p>
           </div>
@@ -3220,7 +3277,7 @@ def main() -> int:
     parser.add_argument("--serve", action="store_true", help="Run a local live dashboard server.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--doctor", action="store_true", help="Print a dashboard health report with warnings, hygiene gaps, blockers, and suggested actions.")
+    parser.add_argument("--doctor", action="store_true", help="Print a dashboard health report with warnings, items to fix, blockers, and suggested actions.")
     parser.add_argument("--print-heartbeat-contract", action="store_true", help="Print the prompt block to include when spawning a future agent.")
     parser.add_argument("--agent-name", default="AGENT_NAME", help="Agent name to use with --print-heartbeat-contract.")
     parser.add_argument("--agent-id", default="", help="Agent id to use with --print-heartbeat-contract when already known.")

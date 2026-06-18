@@ -189,7 +189,7 @@ The local dashboard UI can mark agents reviewed, close them, promote the next wa
 
 ## Impact Scoreboard
 
-The dashboard estimates time saved from agent-assisted work and shows it in the overview/workflow scoreboards. The estimate is intentionally approximate: it multiplies tracked agent slices by a manual-work baseline, weights each slice by lifecycle progress, then subtracts orchestration overhead.
+The dashboard estimates time saved from agent-assisted work and shows it in the overview/workflow scoreboards. The estimate is intentionally approximate: it multiplies tracked agent slices by a manual-work baseline, weights each slice by lifecycle progress, discounts default estimates for scouts/read-only/meta/no-edit slices, then subtracts orchestration overhead for every tracked slice.
 
 Tune the assumptions for a run:
 
@@ -201,7 +201,7 @@ py -3 C:\Users\Piculiar\.codex\skills\agent-dashboard\scripts\agent_dashboard.py
   --impact-note "Estimate uses one focused manual implementation slice per planned agent."
 ```
 
-Agents may also report per-slice estimates in JSON with `manualMinutes` and `coordinationMinutes`. Keep the estimate user-facing and honest; it is motivation, not accounting.
+Agents may also report per-slice estimates in JSON with `manualMinutes` and `coordinationMinutes`; explicit estimates are treated as already scoped and are not discounted by the default scout/meta heuristics. Keep the estimate user-facing and honest; it is motivation, not accounting.
 
 ## Recipes
 

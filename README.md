@@ -86,12 +86,13 @@ The script writes its live state under:
 
 ## Impact Scoreboard
 
-The dashboard includes a little motivation engine for humans: estimated time saved, manual effort avoided, coordination cost, focus blocks recovered, and small badges for healthy orchestration habits.
+The dashboard includes a conservative impact estimate for humans: estimated time saved, manual effort avoided, coordination cost, focus blocks recovered, and small badges for healthy orchestration habits.
 
-By default it uses a conservative estimate:
+By default it uses an intentionally discounted estimate:
 
 - `45m` manual work per full agent slice
-- `8m` coordination overhead per full agent slice
+- lower default manual credit for scouts, read-only rows, orchestration/meta rows, and rows without meaningful changed files
+- `8m` coordination overhead per tracked slice
 - `25m` per focus block
 
 Tune it for your own workflow:
@@ -104,7 +105,7 @@ py -3 .\scripts\agent_dashboard.py --keep-existing `
   --impact-note "Estimate uses one focused manual implementation slice per planned agent."
 ```
 
-Agents can also report per-slice estimates in JSON:
+Agents can also report per-slice estimates in JSON. Explicit estimates are treated as already scoped and are not discounted by the default scout/meta heuristics:
 
 ```json
 {
@@ -114,7 +115,7 @@ Agents can also report per-slice estimates in JSON:
 }
 ```
 
-The estimate is meant to make progress feel visible. It is not billing data, and the dashboard says what assumptions it used.
+The estimate is meant to make progress feel visible without claiming stopwatch precision. It is not billing data, and the dashboard says what assumptions it used.
 
 ## Plan Agents
 

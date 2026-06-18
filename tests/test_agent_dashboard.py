@@ -37,7 +37,7 @@ class AgentDashboardControlPlaneTests(unittest.TestCase):
         payload = self.payload(agent)
 
         self.assertEqual([], agent_dashboard.review_gate_issues(payload["agents"][0]))
-        self.assertNotIn("missing planned write globs", "\n".join(agent_dashboard.dashboard_warnings(payload, payload["agents"])))
+        self.assertNotIn("allowed edit paths are missing", "\n".join(agent_dashboard.dashboard_warnings(payload, payload["agents"])))
 
     def test_worker_missing_write_globs_is_reported(self) -> None:
         worker = agent_dashboard.parse_agent_json({
@@ -52,7 +52,7 @@ class AgentDashboardControlPlaneTests(unittest.TestCase):
         payload = self.payload(worker)
 
         warnings = "\n".join(agent_dashboard.dashboard_warnings(payload, payload["agents"]))
-        self.assertIn("Worker: missing planned write globs", warnings)
+        self.assertIn("Worker: allowed edit paths are missing", warnings)
 
     def test_ingest_final_report_preserves_existing_read_only_flag_when_unspecified(self) -> None:
         scout = agent_dashboard.parse_agent_json({
@@ -117,9 +117,9 @@ class AgentDashboardControlPlaneTests(unittest.TestCase):
 
         report = agent_dashboard.render_doctor_report(payload)
 
-        self.assertIn("Final reports missing: Worker", report)
-        self.assertIn("Write scopes missing: Worker", report)
-        self.assertIn("Stale pending commands: 1", report)
+        self.assertIn("Final reports needed: Worker", report)
+        self.assertIn("Edit paths needed: Worker", report)
+        self.assertIn("Old waiting actions: 1", report)
         self.assertIn("--print-final-report-template \"Worker\"", report)
         self.assertIn("--set-command-state \"cmd1|dismissed|superseded or completed\"", report)
 
@@ -148,6 +148,62 @@ class AgentDashboardControlPlaneTests(unittest.TestCase):
             loaded = json.loads(snapshot.read_text(encoding="utf-8"))
             self.assertEqual("Worker", loaded["agents"][0]["name"])
             self.assertIn("snapshots", payload)
+
+    def test_impact_estimate_discounts_scouts_and_meta_work(self) -> None:
+        worker = agent_dashboard.parse_agent_json({
+            "name": "Worker",
+            "status": "merged",
+            "changedFiles": ["src/worker.py"],
+            "tests": "unit tests passed",
+            "blockers": "None reported",
+            "handoff": "Merged",
+        })
+        scout = agent_dashboard.parse_agent_json({
+            "name": "Release Evidence Scout",
+            "status": "closed",
+            "readOnly": True,
+            "changedFiles": ["None"],
+            "tests": "Read-only scan",
+            "blockers": "None reported",
+            "handoff": "Recommendation handed off",
+        })
+        orchestrator = agent_dashboard.parse_agent_json({
+            "name": "Lead Orchestrator - Release Pack",
+            "status": "merged",
+            "changedFiles": ["eng/release.ps1"],
+            "tests": "release tests passed",
+            "blockers": "None reported",
+            "handoff": "Pack merged",
+        })
+        payload = self.payload(worker, scout, orchestrator)
+
+        impact = agent_dashboard.compute_impact(payload, payload["agents"], agent_dashboard.count_agents(payload["agents"]))
+
+        self.assertEqual(90, impact["manualMinutes"])
+        self.assertEqual(24, impact["coordinationMinutes"])
+        self.assertEqual(66, impact["savedMinutes"])
+        self.assertEqual(2.0, impact["effectiveSlices"])
+        self.assertIn("lowered for read-only, lead, or no-edit work", impact["assumption"])
+
+    def test_explicit_impact_estimates_are_not_discounted_by_slice_type(self) -> None:
+        scout = agent_dashboard.parse_agent_json({
+            "name": "Read Only Scout",
+            "status": "merged",
+            "readOnly": True,
+            "manualMinutes": 30,
+            "coordinationMinutes": 5,
+            "tests": "Read-only scan",
+            "blockers": "None reported",
+            "handoff": "Recommendation handed off",
+        })
+        payload = self.payload(scout)
+
+        impact = agent_dashboard.compute_impact(payload, payload["agents"], agent_dashboard.count_agents(payload["agents"]))
+
+        self.assertEqual(30, impact["manualMinutes"])
+        self.assertEqual(5, impact["coordinationMinutes"])
+        self.assertEqual(25, impact["savedMinutes"])
+        self.assertEqual(0.7, impact["effectiveSlices"])
 
 
 if __name__ == "__main__":
