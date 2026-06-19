@@ -42,17 +42,71 @@ class AgentDashboardControlPlaneTests(unittest.TestCase):
     def test_worker_missing_write_globs_is_reported(self) -> None:
         worker = agent_dashboard.parse_agent_json({
             "name": "Worker",
-            "status": "needs-review",
+            "status": "running",
             "ownership": "src worker files",
-            "changedFiles": ["src/worker.py"],
-            "tests": "unit tests passed",
-            "blockers": "None reported",
-            "handoff": "Ready for review",
+            "changedFiles": ["pending"],
+            "tests": "unit tests pending",
+            "blockers": "None reported yet",
+            "handoff": "Patch pending",
         })
         payload = self.payload(worker)
 
         warnings = "\n".join(agent_dashboard.dashboard_warnings(payload, payload["agents"]))
         self.assertIn("Worker: allowed edit paths are missing", warnings)
+
+    def test_review_ready_row_evidence_replaces_noisy_final_report_gap(self) -> None:
+        worker = agent_dashboard.parse_agent_json({
+            "name": "PDF Arc Export",
+            "status": "needs-review",
+            "summary": "Closed PDF exporter gap for authored Arc entities",
+            "ownership": "CadPdfDrawingExporter.cs;CadPdfDrawingExporterTests.cs",
+            "changedFiles": [
+                "src/CADMation.Core/Drafting/CadPdfDrawingExporter.cs",
+                "tests/CADMation.Tests/CadPdfDrawingExporterTests.cs",
+            ],
+            "tests": "CadPdfDrawingExporterTests 5/5",
+            "blockers": "None reported",
+            "handoff": "Ready for final integration review",
+        })
+        payload = self.payload(worker)
+        summary = agent_dashboard.health_summary(payload)
+
+        warnings = "\n".join(summary["warnings"])
+        self.assertEqual([], summary["finalReportGaps"])
+        self.assertEqual([], summary["writeScopeGaps"])
+        self.assertEqual([], summary["missingIds"])
+        self.assertNotIn("final report", warnings)
+        self.assertNotIn("allowed edit paths are missing", warnings)
+        self.assertEqual(
+            [
+                "src/CADMation.Core/Drafting/CadPdfDrawingExporter.cs",
+                "tests/CADMation.Tests/CadPdfDrawingExporterTests.cs",
+            ],
+            payload["agents"][0]["writeGlobs"],
+        )
+
+    def test_read_only_handoff_evidence_does_not_need_fake_write_globs(self) -> None:
+        scout = agent_dashboard.parse_agent_json({
+            "name": "NXT Command Coverage",
+            "status": "needs-review",
+            "summary": "Read-only command coverage matrix and migration wave plan completed",
+            "ownership": "NXT Drafting command surface audit",
+            "changedFiles": ["None"],
+            "tests": "Read-only source/doc inspection; no tests run in this pass",
+            "blockers": "No repo-local blocker for this audit.",
+            "handoff": "Next owner should split implementation waves by core model and tests/docs.",
+        })
+        payload = self.payload(scout)
+        summary = agent_dashboard.health_summary(payload)
+
+        warnings = "\n".join(summary["warnings"])
+        self.assertTrue(payload["agents"][0]["readOnly"])
+        self.assertEqual([], agent_dashboard.review_gate_issues(payload["agents"][0]))
+        self.assertEqual([], summary["finalReportGaps"])
+        self.assertEqual([], summary["writeScopeGaps"])
+        self.assertEqual([], summary["missingIds"])
+        self.assertNotIn("final report", warnings)
+        self.assertNotIn("allowed edit paths are missing", warnings)
 
     def test_ingest_final_report_preserves_existing_read_only_flag_when_unspecified(self) -> None:
         scout = agent_dashboard.parse_agent_json({
@@ -97,16 +151,21 @@ class AgentDashboardControlPlaneTests(unittest.TestCase):
         self.assertEqual("None reported", template["blockers"])
 
     def test_doctor_report_surfaces_hygiene_gaps_and_stale_commands(self) -> None:
-        worker = agent_dashboard.parse_agent_json({
-            "name": "Worker",
+        review_gap = agent_dashboard.parse_agent_json({
+            "name": "Review Gap",
             "status": "needs-review",
             "ownership": "src worker files",
-            "changedFiles": ["src/worker.py"],
-            "tests": "unit tests passed",
-            "blockers": "None reported",
-            "handoff": "Ready for review",
         })
-        payload = self.payload(worker, commands=[{
+        worker = agent_dashboard.parse_agent_json({
+            "name": "Worker",
+            "status": "running",
+            "ownership": "src worker files",
+            "changedFiles": ["pending"],
+            "tests": "unit tests pending",
+            "blockers": "None reported yet",
+            "handoff": "Patch pending",
+        })
+        payload = self.payload(review_gap, worker, commands=[{
             "id": "cmd1",
             "agent": "Worker",
             "kind": "request-status",
@@ -117,10 +176,10 @@ class AgentDashboardControlPlaneTests(unittest.TestCase):
 
         report = agent_dashboard.render_doctor_report(payload)
 
-        self.assertIn("Final reports needed: Worker", report)
+        self.assertIn("Final reports needed: Review Gap", report)
         self.assertIn("Edit paths needed: Worker", report)
         self.assertIn("Old waiting actions: 1", report)
-        self.assertIn("--print-final-report-template \"Worker\"", report)
+        self.assertIn("--print-final-report-template \"Review Gap\"", report)
         self.assertIn("--set-command-state \"cmd1|dismissed|superseded or completed\"", report)
 
     def test_set_command_state_updates_pending_command(self) -> None:
@@ -204,6 +263,81 @@ class AgentDashboardControlPlaneTests(unittest.TestCase):
         self.assertEqual(5, impact["coordinationMinutes"])
         self.assertEqual(25, impact["savedMinutes"])
         self.assertEqual(0.7, impact["effectiveSlices"])
+
+    def test_doctor_tells_lead_to_stop_spawning_when_only_external_blockers_remain(self) -> None:
+        agents = [
+            agent_dashboard.parse_agent_json({
+                "name": f"Gate {index}",
+                "status": "merged",
+                "changedFiles": [f"eng/gate{index}.ps1"],
+                "tests": "focused tests passed",
+                "blockers": "External live evidence is still missing: signed installer proof and clean-PC smoke.",
+                "blockerType": "external",
+                "handoff": "Operator must attach returned evidence, then rerun the final gate.",
+            })
+            for index in range(4)
+        ]
+        payload = self.payload(*agents)
+
+        report = agent_dashboard.render_doctor_report(payload)
+        convergence = agent_dashboard.health_summary(payload)["convergence"]
+
+        self.assertTrue(convergence["onlyExternal"])
+        self.assertEqual("external evidence needed", convergence["status"])
+        self.assertIn("Convergence: external evidence needed", report)
+        self.assertIn("external/live=4", report)
+        self.assertIn("Stop spawning more repo-local agents", report)
+
+    def test_local_blocker_prevents_external_only_stop_advice(self) -> None:
+        local = agent_dashboard.parse_agent_json({
+            "name": "Local Fix",
+            "status": "blocked",
+            "changedFiles": ["src/gate.py"],
+            "tests": "unit test failure reproduced",
+            "blockers": "Local implementation gap: failing test in src/gate.py.",
+            "blockerType": "local",
+            "handoff": "Patch src/gate.py and rerun unit tests.",
+        })
+        external = agent_dashboard.parse_agent_json({
+            "name": "Signing",
+            "status": "merged",
+            "changedFiles": ["eng/signing.ps1"],
+            "tests": "signing handoff tests passed",
+            "blockers": "External signing certificate is missing.",
+            "blockerType": "external",
+            "handoff": "Operator provides certificate.",
+        })
+        payload = self.payload(local, external)
+
+        report = agent_dashboard.render_doctor_report(payload)
+        convergence = agent_dashboard.health_summary(payload)["convergence"]
+
+        self.assertFalse(convergence["onlyExternal"])
+        self.assertEqual("local work remains", convergence["status"])
+        self.assertIn("local=1, external/live=1", report)
+        self.assertNotIn("Stop spawning more repo-local agents", report)
+
+    def test_unclear_blockers_trigger_clarification_before_more_waves(self) -> None:
+        agents = [
+            agent_dashboard.parse_agent_json({
+                "name": f"Gate {index}",
+                "status": "merged",
+                "changedFiles": [f"docs/gate{index}.md"],
+                "tests": "docs checked",
+                "blockers": "Package evidence is absent and owner is unknown.",
+                "handoff": "Lead should decide who owns the missing evidence.",
+            })
+            for index in range(3)
+        ]
+        payload = self.payload(*agents)
+
+        report = agent_dashboard.render_doctor_report(payload)
+        convergence = agent_dashboard.health_summary(payload)["convergence"]
+
+        self.assertEqual("clarify blocker ownership", convergence["status"])
+        self.assertIn("clarify blocker ownership", report)
+        self.assertIn("Clarify mixed or unclear blockers", report)
+        self.assertNotIn("Nothing needs fixing right now", report)
 
 
 if __name__ == "__main__":

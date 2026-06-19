@@ -45,7 +45,9 @@ It is intentionally not a replacement for the lead agent's judgment. It is the i
 | Spawn reconciliation | Maps planned agents to real Codex session ids after `spawn_agent` returns. |
 | Review gates | Prevents `reviewed` status unless changed files, tests, blocker evidence, and handoff are present. |
 | Read-only scout mode | Lets explorer/scout agents pass review with `readOnly:true`, verification, blockers, and handoff without fake changed files. |
+| Evidence-aware warnings | Treats complete review-ready rows as handoff evidence, infers read-only scout rows, and keeps write-scope warnings focused on active editing work. |
 | Dashboard Doctor | Reports warnings, missing final reports, missing write scopes, stale commands, missing ids, blockers, and next actions. |
+| Convergence check | Warns when the run has shifted from local code work to external/live evidence collection, so you stop spawning unhelpful repo-local agents. |
 | Worktree intelligence | Scans git status, matches changes to owners, flags ownership violations, and ignores noisy build/cache artifacts. |
 | Drift warnings | Surfaces stale running sessions, missing final reports, missing ids, and overlapping write globs. |
 | Durable snapshots | Archives timestamped copies of dashboard JSON for post-run handoff or audits. |
@@ -116,6 +118,8 @@ Agents can also report per-slice estimates in JSON. Explicit estimates are treat
 ```
 
 The estimate is meant to make progress feel visible without claiming stopwatch precision. It is not billing data, and the dashboard says what assumptions it used.
+
+Do not treat this score as completion evidence. The convergence check and your real gates/tests decide whether the run is actually done.
 
 ## Plan Agents
 
@@ -246,7 +250,9 @@ Run the doctor before review, handoff, or closing a swarm:
 py -3 .\scripts\agent_dashboard.py --doctor
 ```
 
-The doctor prints lifecycle counts, drift warnings, final-report gaps, missing write scopes, missing active ids, stale pending commands, critical blockers, and suggested next commands. The same report is available in the live dashboard at `/doctor`.
+The doctor prints lifecycle counts, drift warnings, final-report gaps, missing write scopes, missing active ids, stale pending commands, critical blockers, a convergence check, and suggested next commands. The same report is available in the live dashboard at `/doctor`.
+
+If the doctor says convergence is `external evidence needed`, stop starting more repo-local agents unless you find a new local gap. Collect the operator/live evidence, attach it to the run, then rerun the final gate.
 
 Resolve a stale pending command after acting on it:
 
@@ -270,7 +276,11 @@ An agent cannot be marked `reviewed` unless it has:
 - blocker evidence, even if the answer is `None reported`
 - a handoff
 
+When there is a blocker, prefer JSON and include `blockerType`: `local`, `external`, `mixed`, or `unclear`. Local blockers justify another implementation or debug agent. External blockers need live systems, credentials, operator action, hardware, signing proof, or returned evidence.
+
 Read-only scouts with `readOnly:true` do not need changed files, because their output is analysis rather than edits.
+
+For review-ready rows, changed files plus tests, blocker status, and handoff count as usable handoff evidence even if the row was not created through `--final-report-json-file`. The final-report command is still the cleanest path, but the dashboard avoids duplicate stale/drift warnings when equivalent evidence is already present. Active editing states still need planned edit paths.
 
 This is deliberately strict. The dashboard should make integration safer, not just prettier.
 

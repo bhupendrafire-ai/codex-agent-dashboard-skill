@@ -1,6 +1,6 @@
 ---
 name: agent-dashboard
-description: Create, update, and open a local Codex-style multi-view dashboard for Codex sub-agent orchestration. Use when spawning or deploying Codex sub-agents, or when the user wants to see running agents, public activity updates, agent ownership, status, blockers, changed files, tests, or handoffs in a browser while a multi-agent task is active.
+description: Create, update, and open a local Codex-style multi-view dashboard for Codex sub-agent orchestration. Use when spawning or deploying Codex sub-agents, or when the user wants to see running agents, public activity updates, agent ownership, status, blockers, changed files, tests, handoffs, convergence checks, or stop/continue guidance in a browser while a multi-agent task is active.
 ---
 
 # Agent Dashboard
@@ -47,6 +47,8 @@ py -3 C:\Users\Piculiar\.codex\skills\agent-dashboard\scripts\agent_dashboard.py
   --agent-json '{"name":"CATIA/BOM","id":"019...","status":"running","summary":"Hardening worker contract","ownership":"EngineBridge worker files","changedFiles":["src/EngineBridge/Worker.cs"],"tests":"dotnet test src/EngineBridge.Tests","blockers":"None reported","handoff":"Awaiting lead review"}' `
   --event-json '{"agent":"CATIA/BOM","kind":"edit","message":"Patched worker contract","detail":"Added fixture-backed axis propagation command"}'
 ```
+
+When a blocker is real, include `blockerType` in JSON: `local`, `external`, `mixed`, or `unclear`. Use `local` for repo/code/test work Codex can close. Use `external` for live systems, operator action, credentials, signing certificates, real hardware, returned sidecars, or user-provided evidence. This keeps the convergence check honest.
 
 For larger updates, use `--agent-json-file`, `--event-json-file`, `--plan-agent-json-file`, or `--final-report-json-file`.
 
@@ -103,6 +105,8 @@ py -3 C:\Users\Piculiar\.codex\skills\agent-dashboard\scripts\agent_dashboard.py
 
 For read-only scouts, set `readOnly:true` and keep `allowedFiles`/`ownership` specific. Read-only agents do not need `writeGlobs` or changed files to pass the review gate, but they still need verification, blocker status, and a handoff.
 
+For review-ready rows, changed files plus verification, blocker status, and handoff count as usable handoff evidence even if the row was not created through `--final-report-json-file`. The final-report command is still preferred because it records a canonical timestamp, but complete row evidence should not create duplicate stale/drift warnings. Active editing states still need planned edit paths.
+
 Promote the next queued wave according to the dashboard concurrency limit:
 
 ```powershell
@@ -149,6 +153,8 @@ py -3 C:\Users\Piculiar\.codex\skills\agent-dashboard\scripts\agent_dashboard.py
 ```
 
 The doctor summarizes lifecycle counts, drift warnings, missing final reports, missing write scopes, missing active ids, stale pending commands, critical blockers, impact estimate, and suggested next commands. The same health report is visible in the dashboard at `/doctor`.
+
+Use the doctor as a stopping check, not just a status report. If it says convergence is `external evidence needed`, stop spawning repo-local agents unless a new local gap is found. Package the exact operator/live evidence request, collect the evidence, then rerun the final gate or audit.
 
 Dismiss or resolve a stale pending orchestrator command after acting on it:
 
@@ -203,6 +209,8 @@ py -3 C:\Users\Piculiar\.codex\skills\agent-dashboard\scripts\agent_dashboard.py
 
 Agents may also report per-slice estimates in JSON with `manualMinutes` and `coordinationMinutes`; explicit estimates are treated as already scoped and are not discounted by the default scout/meta heuristics. Keep the estimate user-facing and honest; it is motivation, not accounting.
 
+Do not use the impact score as proof of completion. Prefer the convergence check and authoritative gates when deciding whether a long run is actually moving toward the user's end state.
+
 ## Recipes
 
 Reusable deployment recipes are built in:
@@ -251,6 +259,7 @@ Whenever spawning a future Codex sub-agent:
 5. After `spawn_agent` returns the actual id, run `--reconcile-agent-id`.
 6. Ask agents to publish heartbeats directly with the dashboard script at meaningful milestones.
 7. At final handoff, ingest a JSON final report with changed files, tests, blocker evidence, and handoff.
+8. Before each new wave, run `--doctor` and ask whether the next agent can close a named local blocker. If the answer is no, stop the wave and produce an operator-facing handoff instead.
 
 Generate the heartbeat contract for a prompt with:
 
@@ -268,8 +277,9 @@ The contract tells agents to publish public updates only. They must not write pr
 4. Reconcile actual spawned ids onto planned rows as soon as the tool returns them.
 5. Ingest final reports; do not mark reviewed from memory alone.
 6. Watch stale/drift warnings for missing ids, missing final reports, old heartbeats, and write-glob overlap.
-7. Keep the status honest: if the dashboard cannot read live runtime state directly, say so in the summary.
-8. Close the loop by marking agents `reviewed`, `merged`, `closed`, or `blocked` after evidence-backed review.
+7. Watch the convergence check for over-orchestration: local blockers justify more agents; external-only blockers justify operator/live evidence collection.
+8. Keep the status honest: if the dashboard cannot read live runtime state directly, say so in the summary.
+9. Close the loop by marking agents `reviewed`, `merged`, `closed`, or `blocked` after evidence-backed review.
 
 The webpage is a visibility aid, not an authoritative source. The authoritative evidence remains tool output, changed files, tests, blocker evidence, handoffs, and agent final reports.
 

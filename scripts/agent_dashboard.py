@@ -30,6 +30,72 @@ DEFAULT_FOCUS_BLOCK_MINUTES = 25
 IMPACT_READ_ONLY_WEIGHT = 0.35
 IMPACT_META_WORK_WEIGHT = 0.65
 IMPACT_NO_EDIT_WEIGHT = 0.50
+NO_BLOCKER_VALUES = {"", "none", "none reported", "no blockers", "no blocker", "not blocked", "n/a", "na"}
+PLACEHOLDER_FILE_VALUES = {
+    "",
+    "none",
+    "n/a",
+    "na",
+    "no changes",
+    "no changed files",
+    "no files",
+    "no repo edits",
+    "not applicable",
+    "pending",
+    "tbd",
+    "unknown",
+}
+READ_ONLY_EVIDENCE_TOKENS = (
+    "read-only",
+    "read only",
+    "source/doc inspection",
+    "source inspection",
+    "doc inspection",
+    "docs inspection",
+    "rg scan",
+    "read-only scan",
+)
+BLOCKER_TYPES = {"none", "local", "external", "mixed", "unclear"}
+EXTERNAL_BLOCKER_TOKENS = (
+    "external",
+    "live",
+    "operator",
+    "user input",
+    "credential",
+    "certificate",
+    "signing",
+    "signtool",
+    "unsigned",
+    "clean-pc",
+    "clean pc",
+    "toolroom",
+    "catia",
+    "freecad",
+    "workstation",
+    "hardware",
+    "license",
+    "real sample",
+    "real/sanitized",
+    "legacy v3",
+    "approved evidence",
+    "returned evidence",
+    "not attached",
+)
+LOCAL_BLOCKER_TOKENS = (
+    "repo-local",
+    "local implementation",
+    "implementation gap",
+    "code change",
+    "test failure",
+    "build failure",
+    "parser failure",
+    "missing test",
+    "failing test",
+    "compile",
+    "lint",
+    "typecheck",
+    "worktree",
+)
 DEFAULT_STALE_MINUTES = {
     "planned": 120,
     "queued": 120,
@@ -178,13 +244,16 @@ Agent protocol:
 - Heartbeat cadence: {heartbeat_cadence}
 - Test expectations: {test_expectations}
 - Handoff format: changed files, verification, blockers, next owner.
-- Blocker format: smallest actionable blocker, evidence, and suggested owner.
+- Blocker format: smallest actionable blocker, evidence, suggested owner, and type.
+- Blocker type: local for repo/code/test work, external for live/operator/credential/evidence work, mixed when both apply, unclear when the owner is unknown.
 
 Use this command when your public activity changes:
 py -3 C:\\Users\\Piculiar\\.codex\\skills\\agent-dashboard\\scripts\\agent_dashboard.py --keep-existing --event "{agent_name}|read|Reading the relevant code and docs|<specific files/modules>"
 
 Use this command when your agent row should change:
 py -3 C:\\Users\\Piculiar\\.codex\\skills\\agent-dashboard\\scripts\\agent_dashboard.py --keep-existing --agent "{agent_name}|{agent_id}|running|<current public summary>|<owned files/modules>|<changed files separated by ;>|<tests>|<blockers>|<handoff>"
+
+Prefer --agent-json when setting blockerType.
 
 Expected heartbeat moments:
 - When you start and identify your ownership scope.
@@ -459,6 +528,7 @@ def parse_agent_json(data: dict) -> dict:
     agent["expectedOutputs"] = list_from_value(first_value(data, ["expectedOutputs", "expected_outputs", "outputs"], agent.get("expectedOutputs", [])))
     agent["tests"] = text_from_value(first_value(data, ["tests", "testsRun", "verification", "checks"], agent.get("tests", "")))
     agent["blockers"] = text_from_value(first_value(data, ["blockers", "blocker", "blockerStatus", "risks"], agent.get("blockers", "")))
+    agent["blockerType"] = normalize_blocker_type(first_value(data, ["blockerType", "blocker_type", "blockerScope", "blocker_scope"], agent.get("blockerType", "")))
     agent["handoff"] = text_from_value(first_value(data, ["handoff", "nextHandoff", "next_owner", "nextOwner"], agent.get("handoff", "")))
     agent["readOnly"] = bool_from_value(first_value(data, ["readOnly", "read_only", "readonly", "readMode"], agent.get("readOnly", False)))
     manual_minutes = positive_int(first_value(data, ["manualMinutes", "manual_minutes", "estimatedManualMinutes", "estimated_manual_minutes"], agent.get("manualMinutes", 0)))
@@ -577,6 +647,29 @@ def normalize_list_field(agent: dict, key: str) -> None:
     agent[key] = list_from_value(value)
 
 
+def meaningful_file_entries(value: object) -> list[str]:
+    entries: list[str] = []
+    for item in list_from_value(value):
+        text = text_from_value(item).strip()
+        normalized = text.lower().strip().strip(".")
+        if normalized in PLACEHOLDER_FILE_VALUES:
+            continue
+        entries.append(text)
+    return entries
+
+
+def infer_read_only_from_evidence(agent: dict) -> bool:
+    if agent_is_read_only(agent):
+        return True
+    if meaningful_file_entries(agent.get("changedFiles", [])):
+        return False
+    evidence_text = " ".join(
+        text_from_value(agent.get(key))
+        for key in ["summary", "tests", "handoff", "ownership"]
+    ).lower()
+    return any(token in evidence_text for token in READ_ONLY_EVIDENCE_TOKENS)
+
+
 def glob_scope_root(pattern: str) -> str:
     normalized = normalize_path_for_match(pattern).strip().lstrip("./")
     if not normalized:
@@ -605,7 +698,7 @@ def scopes_overlap(left: str, right: str) -> bool:
 
 
 def active_for_ownership(agent: dict) -> bool:
-    return agent_status(agent) not in {"reviewed", "merged", "closed", "failed"}
+    return agent_status(agent) in {"planned", "queued", "running", "blocked"}
 
 
 def agent_is_read_only(agent: dict) -> bool:
@@ -656,13 +749,19 @@ def normalize_agent(agent: dict) -> dict:
     agent["readOnly"] = agent_is_read_only(agent)
     for list_key in ["allowedFiles", "writeGlobs", "doNotTouch", "expectedOutputs", "changedFiles", "ownershipWarnings"]:
         normalize_list_field(agent, list_key)
+    agent["readOnly"] = infer_read_only_from_evidence(agent)
     if not agent.get("writeGlobs") and agent.get("allowedFiles"):
         agent["writeGlobs"] = list(agent.get("allowedFiles", []))
+    elif not agent.get("writeGlobs") and not agent["readOnly"]:
+        changed_files = meaningful_file_entries(agent.get("changedFiles", []))
+        if changed_files:
+            agent["writeGlobs"] = changed_files
     agent.setdefault("heartbeatCadence", "on start, meaningful read, edit, test, blocker, and final update")
     agent.setdefault("testExpectations", agent.get("tests") or "")
     agent.setdefault("review", {"state": review_state_for(status), "notes": "", "reviewedAt": ""})
     agent.setdefault("worktree", {})
     agent.setdefault("commands", [])
+    agent["blockerType"] = normalize_blocker_type(agent.get("blockerType"))
     if agent.get("manualMinutes"):
         agent["manualMinutes"] = positive_int(agent.get("manualMinutes"), 0)
     if agent.get("coordinationMinutes"):
@@ -812,7 +911,7 @@ def set_agent_status(agent: dict, status: str, note: str = "") -> None:
 
 def review_gate_issues(agent: dict) -> list[str]:
     issues: list[str] = []
-    changed_files = agent.get("changedFiles") if isinstance(agent.get("changedFiles"), list) else []
+    changed_files = meaningful_file_entries(agent.get("changedFiles", []))
     if not agent_is_read_only(agent) and not changed_files:
         issues.append("changed files are missing")
     if not text_from_value(agent.get("tests")):
@@ -822,6 +921,14 @@ def review_gate_issues(agent: dict) -> list[str]:
     if not text_from_value(agent.get("handoff")):
         issues.append("next step is missing")
     return issues
+
+
+def review_handoff_evidence_complete(agent: dict) -> bool:
+    return not review_gate_issues(agent)
+
+
+def final_report_or_handoff_evidence_present(agent: dict) -> bool:
+    return bool(text_from_value(agent.get("lastFinalReportAt"))) or review_handoff_evidence_complete(agent)
 
 
 def mark_agent_reviewed(payload: dict, agent: dict, note: str = "") -> bool:
@@ -972,6 +1079,8 @@ def stale_agent_warnings(payload: dict, agent: dict) -> list[str]:
     warnings: list[str] = []
     status = agent_status(agent)
     threshold = DEFAULT_STALE_MINUTES.get(status)
+    if status in REVIEW_READY_STATES and final_report_or_handoff_evidence_present(agent):
+        threshold = None
     if threshold:
         last_seen = last_agent_activity_at(payload, agent)
         if not last_seen:
@@ -982,9 +1091,111 @@ def stale_agent_warnings(payload: dict, agent: dict) -> list[str]:
                 warnings.append(f"{plain_label(status, STATUS_LABELS)} has not posted an update for {age_label(age_minutes)}")
     if status == "running" and not text_from_value(agent.get("id")):
         warnings.append("running agent is missing its session ID")
-    if status in {"completed", "needs-review"} and not text_from_value(agent.get("lastFinalReportAt")):
-        warnings.append("final report has not been added")
+    if status in REVIEW_READY_STATES and not final_report_or_handoff_evidence_present(agent):
+        warnings.append("final report or complete handoff evidence has not been added")
     return warnings
+
+
+def normalize_blocker_type(value: object) -> str:
+    text = text_from_value(value).lower().replace("_", "-")
+    aliases = {
+        "": "",
+        "none": "none",
+        "no-blocker": "none",
+        "local": "local",
+        "repo-local": "local",
+        "code": "local",
+        "implementation": "local",
+        "external": "external",
+        "live": "external",
+        "operator": "external",
+        "user": "external",
+        "mixed": "mixed",
+        "both": "mixed",
+        "unclear": "unclear",
+        "unknown": "unclear",
+    }
+    return aliases.get(text, text if text in BLOCKER_TYPES else "")
+
+
+def blocker_is_empty(blocker: object) -> bool:
+    return text_from_value(blocker).lower() in NO_BLOCKER_VALUES
+
+
+def blocker_category(agent: dict) -> str:
+    explicit = normalize_blocker_type(agent.get("blockerType"))
+    blocker = text_from_value(agent.get("blockers"))
+    if explicit in BLOCKER_TYPES and explicit:
+        return explicit
+    if blocker_is_empty(blocker):
+        return "none"
+    text = " ".join([
+        blocker,
+        text_from_value(agent.get("summary")),
+        text_from_value(agent.get("handoff")),
+    ]).lower()
+    external_hit = any(token in text for token in EXTERNAL_BLOCKER_TOKENS)
+    local_hit = any(token in text for token in LOCAL_BLOCKER_TOKENS)
+    if external_hit and local_hit:
+        if "no local blocker" in text or "no repo-local blocker" in text or "no release-scout implementation action" in text:
+            return "external"
+        return "mixed"
+    if external_hit:
+        return "external"
+    if local_hit:
+        return "local"
+    return "unclear"
+
+
+def named_agent(agent: dict) -> str:
+    return str(agent.get("name") or agent.get("id") or "agent")
+
+
+def convergence_summary(payload: dict, agents: list[dict] | None = None) -> dict:
+    agents = agents if agents is not None else payload.get("agents", [])
+    buckets: dict[str, list[dict]] = {key: [] for key in ("local", "external", "mixed", "unclear")}
+    for agent in agents:
+        category = blocker_category(agent)
+        if category in buckets:
+            buckets[category].append(agent)
+
+    done_count = len([agent for agent in agents if agent_status(agent) in DONE_STATES])
+    active_count = len([agent for agent in agents if agent_status(agent) in ACTIVE_STATES or agent_status(agent) in {"planned", "queued"}])
+    has_blockers = any(buckets.values())
+    repo_local_clear = not buckets["local"] and not buckets["mixed"] and not buckets["unclear"]
+    only_external = has_blockers and repo_local_clear and bool(buckets["external"])
+
+    if only_external and done_count >= 3:
+        status = "external evidence needed"
+        recommendation = "Stop spawning more repo-local agents unless a new local gap is found; collect the external/live evidence and rerun the final gate."
+        warnings = [recommendation]
+    elif not buckets["local"] and (buckets["mixed"] or buckets["unclear"]):
+        status = "clarify blocker ownership"
+        recommendation = "Clarify mixed or unclear blockers before another broad wave; if none are local, stop spawning repo-local agents and collect external/live evidence."
+        warnings = [recommendation] if done_count >= 3 else []
+    elif buckets["local"] or buckets["mixed"] or buckets["unclear"]:
+        status = "local work remains"
+        recommendation = "Run the next agent only if it can close a named local blocker or clarify an unclear blocker."
+        warnings = []
+    elif active_count:
+        status = "work in progress"
+        recommendation = "Keep updates current and avoid launching overlapping agents without edit paths."
+        warnings = []
+    else:
+        status = "clear"
+        recommendation = "No blocker pattern recorded; keep final reports and evidence current."
+        warnings = []
+
+    return {
+        "status": status,
+        "recommendation": recommendation,
+        "warnings": warnings,
+        "onlyExternal": only_external,
+        "doneCount": done_count,
+        "activeCount": active_count,
+        "counts": {key: len(value) for key, value in buckets.items()},
+        "buckets": buckets,
+    }
 
 
 def dashboard_warnings(payload: dict, agents: list[dict]) -> list[str]:
@@ -999,6 +1210,7 @@ def dashboard_warnings(payload: dict, agents: list[dict]) -> list[str]:
             issues = review_gate_issues(agent)
             if issues:
                 warnings.append(f"{name}: marked reviewed but details are missing ({'; '.join(issues)})")
+    warnings.extend(convergence_summary(payload, agents).get("warnings", []))
     return warnings
 
 
@@ -1048,7 +1260,7 @@ def health_summary(payload: dict) -> dict:
     warnings = dashboard_warnings(payload, agents)
     final_report_gaps = [
         agent for agent in agents
-        if agent_status(agent) in REVIEW_READY_STATES and not text_from_value(agent.get("lastFinalReportAt"))
+        if agent_status(agent) in REVIEW_READY_STATES and not final_report_or_handoff_evidence_present(agent)
     ]
     write_scope_gaps = [
         agent for agent in agents
@@ -1056,7 +1268,11 @@ def health_summary(payload: dict) -> dict:
     ]
     missing_ids = [
         agent for agent in agents
-        if agent_status(agent) in {"running", "completed", "needs-review"} and not text_from_value(agent.get("id"))
+        if (
+            agent_status(agent) == "running"
+            or (agent_status(agent) in REVIEW_READY_STATES and not final_report_or_handoff_evidence_present(agent))
+        )
+        and not text_from_value(agent.get("id"))
     ]
     commands = pending_commands(payload)
     stale_commands = [
@@ -1066,9 +1282,10 @@ def health_summary(payload: dict) -> dict:
     blocker_map: dict[str, list[str]] = {}
     for agent in agents:
         blocker = text_from_value(agent.get("blockers"))
-        if not blocker or blocker.lower() in {"none", "none reported", "no blockers"}:
+        if blocker_is_empty(blocker):
             continue
-        blocker_map.setdefault(blocker, []).append(str(agent.get("name") or agent.get("id") or "agent"))
+        blocker_map.setdefault(blocker, []).append(named_agent(agent))
+    convergence = convergence_summary(payload, agents)
     return {
         "counts": counts,
         "warningCount": len(warnings),
@@ -1079,6 +1296,7 @@ def health_summary(payload: dict) -> dict:
         "pendingCommands": commands,
         "staleCommands": stale_commands,
         "blockers": blocker_map,
+        "convergence": convergence,
         "impact": compute_impact(payload, agents, counts),
         "worktree": payload.get("worktree", {}),
         "workflow": payload.get("workflow", {}),
@@ -1099,6 +1317,7 @@ def render_doctor_report(payload: dict) -> str:
         f"- Warnings: {summary['warningCount']}",
         f"- Waiting actions: {len(summary['pendingCommands'])}",
         f"- Old waiting actions: {len(summary['staleCommands'])}",
+        f"- Convergence: {summary['convergence']['status']}",
         f"- Estimated saved time: {format_minutes(int(impact.get('savedMinutes', 0)))} ({impact.get('rank')})",
     ]
     if worktree:
@@ -1140,7 +1359,19 @@ def render_doctor_report(payload: dict) -> str:
             extra = f" (+{len(agents) - 4} more)" if len(agents) > 4 else ""
             lines.append(f"- {owner_text}{extra}: {blocker}")
 
+    convergence = summary["convergence"]
+    lines.extend(["", "## Convergence Check"])
+    blocker_counts = convergence["counts"]
+    lines.append(
+        "- Blocker mix: "
+        f"local={blocker_counts['local']}, external/live={blocker_counts['external']}, "
+        f"mixed={blocker_counts['mixed']}, unclear={blocker_counts['unclear']}"
+    )
+    lines.append(f"- Recommendation: {convergence['recommendation']}")
+
     lines.extend(["", "## Suggested Next Steps"])
+    if convergence["warnings"]:
+        lines.append(f"- {convergence['warnings'][0]}")
     if summary["finalReportGaps"]:
         first = summary["finalReportGaps"][0]
         lines.append(f"- Make a final report template: --print-final-report-template \"{first.get('name') or first.get('id')}\"")
@@ -1150,7 +1381,7 @@ def render_doctor_report(payload: dict) -> str:
     if summary["staleCommands"]:
         first = summary["staleCommands"][0]
         lines.append(f"- Clear old waiting action: --set-command-state \"{first.get('id')}|dismissed|superseded or completed\"")
-    if not (summary["finalReportGaps"] or summary["writeScopeGaps"] or summary["staleCommands"]):
+    if not (summary["finalReportGaps"] or summary["writeScopeGaps"] or summary["staleCommands"] or convergence["warnings"]):
         lines.append("- Nothing needs fixing right now; keep updates and final reports current.")
     return "\n".join(lines).strip() + "\n"
 
@@ -1174,6 +1405,7 @@ def build_final_report_template(payload: dict, agent_ref_value: str) -> dict:
         "expectedOutputs": agent.get("expectedOutputs") if isinstance(agent.get("expectedOutputs"), list) else ["changed files", "tests", "blockers", "next step"],
         "tests": agent.get("tests") or "<verification run or reason tests were not run>",
         "blockers": agent.get("blockers") or "None reported",
+        "blockerType": blocker_category(agent),
         "handoff": agent.get("handoff") or "<next owner or action>",
         "events": [
             {
@@ -1804,6 +2036,10 @@ def render_agent_rows(payload: dict, agents: list[dict]) -> str:
                   <label>Stuck on</label>
                   <p>{esc(agent.get("blockers")) or '<span class="muted">None reported</span>'}</p>
                 </section>
+                <section>
+                  <label>Blocker type</label>
+                  <p>{esc(plain_label(blocker_category(agent)))}</p>
+                </section>
               </div>
               <div class="handoff">
                 <label>Next step</label>
@@ -2027,6 +2263,28 @@ def render_impact_panel(impact: dict) -> str:
     return render_panel("Time Saved Estimate", "rough estimate", body)
 
 
+def render_convergence_panel(payload: dict, agents: list[dict]) -> str:
+    convergence = convergence_summary(payload, agents)
+    counts = convergence["counts"]
+    body = f"""
+      <div class="workflow-grid">
+        <section>
+          <label>Status</label>
+          <p>{esc(convergence.get("status"))}</p>
+        </section>
+        <section>
+          <label>Blocker mix</label>
+          <p>{esc(counts.get("local", 0))} local &middot; {esc(counts.get("external", 0))} external/live &middot; {esc(counts.get("mixed", 0))} mixed &middot; {esc(counts.get("unclear", 0))} unclear</p>
+        </section>
+      </div>
+      <div class="handoff">
+        <label>Next move</label>
+        <p>{esc(convergence.get("recommendation"))}</p>
+      </div>
+    """
+    return render_panel("Convergence Check", "spawn only useful next agents", body)
+
+
 def filter_agents(agents: list[dict], statuses: set[str]) -> list[dict]:
     return [agent for agent in agents if agent_status(agent) in statuses]
 
@@ -2090,6 +2348,7 @@ def render_overview(payload: dict, agents: list[dict], counts: dict[str, int]) -
     return (
         render_stats(counts, impact)
         + render_impact_panel(impact)
+        + render_convergence_panel(payload, agents)
         + (render_panel("Needs Attention", f"{len(warnings)} warnings", render_warning_list(warnings)) if warnings else "")
         + render_panel("Active Agents", f"{len(active_agents)} active or waiting", render_agent_table(active_agents))
         + (render_panel("Blocked", f"{len(blocked_agents)} need attention", render_agent_table(blocked_agents)) if blocked_agents else "")
@@ -2206,6 +2465,7 @@ def render_workflow_view(payload: dict, agents: list[dict], counts: dict[str, in
     return (
         render_stats(counts, impact)
         + render_impact_panel(impact)
+        + render_convergence_panel(payload, agents)
         + (render_panel("Needs Attention", f"{len(warnings)} warnings", render_warning_list(warnings)) if warnings else "")
         + render_panel("Work Plan", "who runs next", body)
         + render_panel("Waiting Actions", "copy into agent chats", render_pending_commands(payload))
@@ -2395,6 +2655,10 @@ def render_agent_detail(payload: dict, agents: list[dict], agent_ref_value: str)
           <section>
             <label>Stuck on</label>
             <p>{esc(agent.get("blockers")) or '<span class="muted">None reported</span>'}</p>
+          </section>
+          <section>
+            <label>Blocker type</label>
+            <p>{esc(plain_label(blocker_category(agent)))}</p>
           </section>
         </div>
         <div class="handoff">
